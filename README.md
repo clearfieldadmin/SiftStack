@@ -91,15 +91,53 @@ python src/main.py daily --upload-datasift --notify-slack
 
 ## Adapting to Your Market
 
-SiftStack is built for Knox/Blount County, TN but the architecture is market-agnostic:
+SiftStack is built for Knox/Blount County, TN but the architecture is market-agnostic. Use any county name — the pipeline accepts it and degrades gracefully if a county-specific API (like tax lookup) isn't available:
 
 1. **Saved Searches** — Edit `SAVED_SEARCHES` in `src/config.py` to match your county's notice site
-2. **Tax API** — The tax enricher (`src/tax_enricher.py`) queries your county's property tax API
+2. **Tax API** — The tax enricher (`src/tax_enricher.py`) queries your county's property tax API. Knox is built in; add yours alongside it
 3. **Notice Parser** — The regex patterns in `src/notice_parser.py` handle 7 notice types: foreclosure, tax sale, tax delinquent, probate, eviction, code violation, divorce
-4. **Photo Import** — Works with any courthouse terminal — the OCR + LLM pipeline is county-independent
-5. **DataSift Presets** — The 21 filter presets and 26 sequence templates are reusable across markets
+4. **Photo Import** — Works with any courthouse terminal in any county — the OCR + LLM pipeline is county-independent
+5. **Dropbox Watch** — Create folders for your county (`/YourCounty/foreclosure/`, etc.) and the watcher picks them up automatically
+6. **DataSift Presets** — The 21 filter presets and 26 sequence templates are reusable across markets
 
 The enrichment pipeline (Smarty, Zillow, obituary search, skip trace) works nationwide — no market-specific configuration needed.
+
+## Buy Box Configuration
+
+By default, SiftStack filters out property types that don't fit a typical residential wholesaling buy box. **Your strategy may be different.** Use these flags to match your buy box:
+
+### Property Type Filters
+
+| Flag | Default | What It Does |
+|------|---------|-------------|
+| `--include-vacant` | OFF (removed) | Keep vacant land parcels. Turn ON for land deals, subdivisions, infill lots. |
+| `--include-commercial` | OFF (removed) | Keep commercial properties. Turn ON for commercial investing, mixed-use, multifamily. |
+| `--include-entities` | OFF (removed) | Keep LLC/Corp/Trust-owned records. Turn ON if you market to entity owners directly. |
+
+### Examples
+
+```bash
+# Default — residential only, no vacant land, no commercial, no entities
+python src/main.py daily --upload-datasift
+
+# Land investor — keep vacant parcels
+python src/main.py daily --include-vacant --upload-datasift
+
+# Commercial investor — keep everything
+python src/main.py daily --include-vacant --include-commercial --include-entities --upload-datasift
+
+# Entity researcher — keep entities AND research the person behind them
+python src/main.py daily --include-entities --research-entities --upload-datasift
+```
+
+### Apify Actor (Cloud)
+
+The same toggles are available in the Apify Console under your Actor's input configuration:
+- **Include Vacant Land** — checkbox
+- **Include Commercial Properties** — checkbox
+- **Include Entity-Owned Properties** — checkbox
+
+These apply to every scheduled run.
 
 ## Configuration
 

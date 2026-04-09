@@ -176,6 +176,11 @@ async def actor_main() -> None:
         do_tracerfy = actor_input.get("run_tracerfy", True)
         do_notify_slack = actor_input.get("notify_slack", True)
 
+        # Buy box / filter toggles
+        include_vacant = actor_input.get("include_vacant", False)
+        include_commercial = actor_input.get("include_commercial", False)
+        include_entities = actor_input.get("include_entities", False)
+
         # Validate
         if not config.TNPN_EMAIL or not config.TNPN_PASSWORD:
             Actor.log.error("tn_username and tn_password are required")
@@ -310,6 +315,9 @@ async def actor_main() -> None:
 
             opts = PipelineOptions(
                 skip_parcel_lookup=True,  # web scrape notices don't have parcel IDs
+                skip_vacant_filter=include_vacant,
+                skip_commercial_filter=include_commercial,
+                skip_entity_filter=include_entities,
                 source_label="Apify Actor",
             )
             notices = run_enrichment_pipeline(notices, opts)
@@ -472,9 +480,6 @@ def _run_pdf_import(args) -> None:
         sys.exit(1)
 
     county = args.pdf_county.strip().title()  # "knox" → "Knox"
-    if county not in ("Knox", "Blount"):
-        logging.error("--pdf-county must be 'Knox' or 'Blount', got '%s'", county)
-        sys.exit(1)
 
     api_key = config.ANTHROPIC_API_KEY or None
 
@@ -501,6 +506,9 @@ def _run_pdf_import(args) -> None:
         skip_obituary=args.skip_obituary,
         skip_ancestry=getattr(args, "skip_ancestry", False),
         skip_entity_research=not getattr(args, "research_entities", False),
+        skip_vacant_filter=getattr(args, "include_vacant", False),
+        skip_commercial_filter=getattr(args, "include_commercial", False),
+        skip_entity_filter=getattr(args, "include_entities", False),
         skip_heir_verification=args.skip_heir_verification,
         max_heir_depth=args.max_heir_depth,
         skip_dm_address=args.skip_dm_address,
@@ -543,9 +551,6 @@ def _run_photo_import(args) -> None:
         sys.exit(1)
 
     county = args.photo_county.strip().title()
-    if county not in ("Knox", "Blount"):
-        logging.error("--photo-county must be 'Knox' or 'Blount', got '%s'", county)
-        sys.exit(1)
 
     notice_type = args.photo_type.strip().lower()
     api_key = config.ANTHROPIC_API_KEY or None
@@ -569,7 +574,9 @@ def _run_photo_import(args) -> None:
     # (probate from court terminals never has property address — would filter everything)
     no_address_types = {"probate", "divorce"}
     opts = PipelineOptions(
-        skip_vacant_filter=notice_type in no_address_types,
+        skip_vacant_filter=getattr(args, "include_vacant", False) or notice_type in no_address_types,
+        skip_commercial_filter=getattr(args, "include_commercial", False),
+        skip_entity_filter=getattr(args, "include_entities", False),
         skip_parcel_lookup=args.skip_tax,
         skip_smarty=args.skip_smarty,
         skip_zillow=args.skip_zillow,
@@ -626,9 +633,6 @@ def _run_csv_import(args) -> None:
     county = None
     if args.csv_county:
         county = args.csv_county.strip().title()
-        if county not in ("Knox", "Blount"):
-            logging.error("--csv-county must be 'Knox' or 'Blount', got '%s'", county)
-            sys.exit(1)
 
     # Read all CSVs → NoticeData, merge
     all_notices = []
@@ -671,6 +675,9 @@ def _run_csv_import(args) -> None:
     primary_name = csv_paths[0].name
     opts = PipelineOptions(
         skip_filter_sold=False,
+        skip_vacant_filter=getattr(args, "include_vacant", False),
+        skip_commercial_filter=getattr(args, "include_commercial", False),
+        skip_entity_filter=getattr(args, "include_entities", False),
         skip_smarty=args.skip_smarty,
         skip_zillow=args.skip_zillow,
         skip_tax=args.skip_tax,
@@ -941,7 +948,7 @@ def cli_main() -> None:
         "--pdf-county",
         type=str,
         default=None,
-        help='County for PDF import: "Knox" or "Blount" (required for pdf-import mode)',
+        help='County name for PDF import, e.g. "Knox" (required for pdf-import mode)',
     )
     parser.add_argument(
         "--pdf-date",
@@ -966,7 +973,7 @@ def cli_main() -> None:
         type=str,
         default=None,
         dest="photo_county",
-        help='County for photo import: "Knox" or "Blount" (required for photo-import mode)',
+        help='County name for photo import, e.g. "Knox" (required for photo-import mode)',
     )
     parser.add_argument(
         "--photo-type",
@@ -1019,7 +1026,7 @@ def cli_main() -> None:
         "--csv-county",
         type=str,
         default=None,
-        help='County for CSV import: "Knox" or "Blount" (sets county for records missing it)',
+        help='County name for CSV import, e.g. "Knox" (sets county for records missing it)',
     )
 
     parser.add_argument(
@@ -1088,6 +1095,22 @@ def cli_main() -> None:
         "--research-entities",
         action="store_true",
         help="Research entity-owned properties to find the person behind LLCs/Corps (web search + LLM)",
+    )
+    # Buy box / filter toggles — control which property types pass through
+    parser.add_argument(
+        "--include-vacant",
+        action="store_true",
+        help="Keep vacant land parcels (default: filtered out). Use if your buy box includes land deals.",
+    )
+    parser.add_argument(
+        "--include-commercial",
+        action="store_true",
+        help="Keep commercial properties (default: filtered out). Use if your buy box includes commercial.",
+    )
+    parser.add_argument(
+        "--include-entities",
+        action="store_true",
+        help="Keep entity-owned records (LLC, Corp, etc.) without filtering. Default: removed unless --research-entities finds a person.",
     )
     parser.add_argument(
         "--upload-datasift",
@@ -1586,6 +1609,9 @@ def _run_scrape_pipeline(args, searches) -> None:
 
     opts = PipelineOptions(
         skip_parcel_lookup=True,  # web scrape notices don't have parcel IDs
+        skip_vacant_filter=getattr(args, "include_vacant", False),
+        skip_commercial_filter=getattr(args, "include_commercial", False),
+        skip_entity_filter=getattr(args, "include_entities", False),
         skip_smarty=getattr(args, "skip_smarty", False),
         skip_zillow=getattr(args, "skip_zillow", False),
         skip_tax=getattr(args, "skip_tax", False),

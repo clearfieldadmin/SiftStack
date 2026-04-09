@@ -28,7 +28,9 @@ VALID_NOTICE_TYPES = {
     "foreclosure", "tax_sale", "tax_delinquent", "probate",
     "eviction", "code_violation", "divorce",
 }
-VALID_COUNTIES = {"knox", "blount"}
+# Counties are not restricted — any county folder name in Dropbox is accepted.
+# Previously hardcoded to Knox/Blount; now supports any market.
+KNOWN_COUNTIES = {"knox", "blount"}  # Known counties (used for info logging only)
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
@@ -78,9 +80,8 @@ def _parse_folder_path(file_path: str, root_folder: str = "") -> tuple[str, str]
     county_raw = parts[0].lower()
     type_raw = parts[1].lower().replace("-", "_").replace(" ", "_")
 
-    if county_raw not in VALID_COUNTIES:
-        logger.debug("Unrecognized county in path: %s", parts[0])
-        return None
+    if county_raw not in KNOWN_COUNTIES:
+        logger.info("New county detected in Dropbox path: %s (not in default Knox/Blount)", parts[0])
 
     if type_raw not in VALID_NOTICE_TYPES:
         logger.debug("Unrecognized notice type in path: %s", parts[1])

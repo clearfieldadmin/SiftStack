@@ -196,6 +196,27 @@
             "description": "Send a run summary to Slack/Discord after pipeline completes. Also sends error alerts on failure. Requires slack_webhook_url.",
             "default": true,
             "editor": "checkbox"
+        },
+        "include_vacant": {
+            "title": "Include Vacant Land",
+            "type": "boolean",
+            "description": "Keep vacant land parcels (no house number). Default OFF — turn ON if your buy box includes land deals.",
+            "default": false,
+            "editor": "checkbox"
+        },
+        "include_commercial": {
+            "title": "Include Commercial Properties",
+            "type": "boolean",
+            "description": "Keep commercial properties (Smarty RDI = Commercial). Default OFF — turn ON if your buy box includes commercial.",
+            "default": false,
+            "editor": "checkbox"
+        },
+        "include_entities": {
+            "title": "Include Entity-Owned Properties",
+            "type": "boolean",
+            "description": "Keep LLC/Corp/Trust-owned records without filtering. Default OFF — entities are removed unless a person is found behind them.",
+            "default": false,
+            "editor": "checkbox"
         }
     }
 }
