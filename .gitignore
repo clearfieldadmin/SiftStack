@@ -1,0 +1,62 @@
+# Credentials & secrets
+.env
+input.json
+input_foreclosure_daily.json
+
+# State files (generated at runtime)
+last_run.json
+cookies.json
+datasift_cookies.json
+dropbox_state.json
+photo_state.json
+*.tmp
+*.bak
+
+# Output (generated data)
+output/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Browser profiles (contain login data)
+.ancestry_profile/
+.datasift_profile/
+.playwright/
+
+# Apify local storage
+apify_storage/
+storage/
+
+# Test data & photos
+test_photos/
+
+# Skills distribution ZIPs (large, distributed separately)
+Skills for REI/
+*.skill
+*.plugin
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Claude Code / planning
+.claude/
+.planning/
+.playwright-mcp/
+
+# Misc
+node_modules/
+lists-hub/
+_brand_tmp/
+_tmp_skill/
+autoresearch/
+.pytest_cache/

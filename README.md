@@ -1,0 +1,298 @@
+# SiftStack
+
+Full-stack real estate investing operations platform. Pulls data from any source — web scrapes, scanned PDFs, courthouse terminal photos, Dropbox uploads — standardizes everything through a 10-step enrichment pipeline, and pushes it into your CRM ready for outreach.
+
+Built for the [DataSift.ai](https://datasift.ai) community. Works with any market, any county, any state.
+
+## What It Does
+
+**One pipeline, many inputs.** No matter how you get the data, it comes out the same way:
+
+```
+  Web Scrape (CAPTCHA sites)  ──┐
+  Scanned PDF Import (OCR)    ──┤
+  Courthouse Terminal Photos  ──┼──→  Enrichment Pipeline  ──→  CRM Upload  ──→  Marketing
+  Dropbox Auto-Polling        ──┤     (10 steps)                (DataSift)       (Sequences)
+  CSV Re-Import               ──┘
+```
+
+### Data Intake (5 methods)
+
+| Method | How It Works | Use Case |
+|--------|-------------|----------|
+| **Web Scrape** | Playwright browser automation with CAPTCHA solving | Public notice sites, county clerk portals |
+| **PDF Import** | pypdfium2 rendering + Tesseract OCR | Scanned tax sale lists, legal documents |
+| **Photo Import** | OpenCV preprocessing + OCR + LLM parsing | Phone photos of courthouse terminal screens |
+| **Dropbox Watch** | Auto-polls a Dropbox folder every 15 minutes | Runner uploads photos from the field, system processes automatically |
+| **CSV Re-Import** | Read existing data, re-enrich with latest APIs | Refresh stale records, merge datasets |
+
+All five methods produce the same `NoticeData` records and flow through the same enrichment pipeline.
+
+### Enrichment Pipeline (10 steps)
+
+Every record gets the same treatment, regardless of source:
+
+1. **Deduplicate** — same property in multiple notices? Keep the most recent
+2. **Vacant Land Filter** — remove parcels with no house number
+3. **Entity Filter** — flag LLC/Corp owners, research the person behind them
+4. **Probate Property Lookup** — 3-tier search: Tax API → Executor family → People search
+5. **Tax Delinquency** — parcel lookup, delinquent years + amount
+6. **Address Standardization** — Smarty USPS validation, ZIP+4, geocoding, vacancy detection
+7. **Commercial Filter** — remove commercial properties (RDI check)
+8. **Zillow Enrichment** — Zestimate, MLS status, equity estimate, property details
+9. **Obituary Search** — deceased owner detection, heir identification, decision-maker ranking
+10. **Data Validation** — catch garbage OCR, verify required fields, compute mailable flag
+
+### CRM Automation (DataSift.ai)
+
+After enrichment, records are automatically:
+- Formatted into 41-column DataSift CSV with tags, lists, and custom fields
+- Uploaded via Playwright browser automation (5-step wizard)
+- Enriched with SiftMap property data (beds, baths, Zestimate)
+- Skip traced for phone numbers and emails
+- Routed into niche sequential marketing campaigns
+
+### Deal Analysis Tools
+
+CLI tools for evaluating deals on the fly:
+
+- **Comp Analysis** — Two-Bucket ARV with 7-tab Excel workbook
+- **Rehab Estimator** — 4-tier room-by-room cost estimation
+- **Deal Analyzer** — MAO calculation, financing scenarios (HML/conventional), ROI projections
+- **Market Analysis** — Zip code scoring with 6 weighted factors
+- **Buyer Prospecting** — Cash buyer identification from county records
+- **Deep Prospecting** — 4-level research depth with PDF reports
+
+## Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/YOUR_USERNAME/SiftStack.git
+cd SiftStack
+pip install -r requirements.txt
+playwright install chromium
+
+# Configure credentials
+cp .env.example .env
+# Edit .env with your API keys (see Configuration below)
+
+# Run your first scrape
+python src/main.py daily --counties Knox
+
+# Or import a scanned PDF
+python src/main.py pdf-import --pdf-path ./tax_sale.pdf --pdf-county Knox
+
+# Or process courthouse photos
+python src/main.py photo-import --folder ./photos --photo-county Knox --photo-type probate
+
+# Full automated pipeline (scrape + enrich + upload to CRM + notify Slack)
+python src/main.py daily --upload-datasift --notify-slack
+```
+
+## Adapting to Your Market
+
+SiftStack is built for Knox/Blount County, TN but the architecture is market-agnostic:
+
+1. **Saved Searches** — Edit `SAVED_SEARCHES` in `src/config.py` to match your county's notice site
+2. **Tax API** — The tax enricher (`src/tax_enricher.py`) queries your county's property tax API
+3. **Notice Parser** — The regex patterns in `src/notice_parser.py` handle 7 notice types: foreclosure, tax sale, tax delinquent, probate, eviction, code violation, divorce
+4. **Photo Import** — Works with any courthouse terminal — the OCR + LLM pipeline is county-independent
+5. **DataSift Presets** — The 21 filter presets and 26 sequence templates are reusable across markets
+
+The enrichment pipeline (Smarty, Zillow, obituary search, skip trace) works nationwide — no market-specific configuration needed.
+
+## Configuration
+
+### Required (for web scraping)
+| Variable | Service | Cost |
+|----------|---------|------|
+| `TNPN_EMAIL` / `TNPN_PASSWORD` | Your state's public notice site | Free account |
+| `CAPTCHA_API_KEY` | [2Captcha](https://2captcha.com) | ~$3/1,000 solves |
+
+### Enrichment APIs (optional, pipeline degrades gracefully)
+| Variable | Service | Cost | What It Adds |
+|----------|---------|------|-------------|
+| `SMARTY_AUTH_ID` / `TOKEN` | [Smarty](https://smarty.com) | 250 free/month | USPS validation, geocoding, vacancy |
+| `OPENWEBNINJA_API_KEY` | [OpenWeb Ninja](https://openwebninja.com) | 100 free/month | Zestimate, MLS, equity |
+| `ANTHROPIC_API_KEY` | [Anthropic](https://console.anthropic.com) | ~$0.001/record | LLM parsing, obituary search |
+| `TRACERFY_API_KEY` | [Tracerfy](https://tracerfy.com) | $0.02/record | Phones, emails, mailing addresses |
+| `TRESTLE_API_KEY` | [Trestle](https://trestleiq.com) | $0.015/phone | Phone scoring (5-tier dial priority) |
+
+### CRM + Notifications (optional)
+| Variable | Service | What It Does |
+|----------|---------|-------------|
+| `DATASIFT_EMAIL` / `PASSWORD` | [DataSift.ai](https://datasift.ai) | Auto-upload + enrich + skip trace |
+| `SLACK_WEBHOOK_URL` | Slack / Discord | Daily summaries + error alerts |
+
+### All Intake Methods (optional)
+| Variable | Service | What It Does |
+|----------|---------|-------------|
+| `DROPBOX_APP_KEY` / `SECRET` / `TOKEN` | [Dropbox](https://www.dropbox.com/developers) | Auto-poll for courthouse photos |
+| `ANCESTRY_EMAIL` / `PASSWORD` | [Ancestry.com](https://ancestry.com) | SSDI + obituary collection |
+
+Every API is optional. Missing a key? That enrichment step is skipped and the pipeline continues.
+
+## CLI Commands
+
+```bash
+# ── Data Acquisition ────────────────────────────────────────────
+python src/main.py daily                    # Scrape new notices since last run
+python src/main.py historical               # Scrape last 12 months
+python src/main.py pdf-import --pdf-path FILE --pdf-county Knox
+python src/main.py photo-import --folder DIR --photo-county Knox --photo-type probate
+python src/main.py dropbox-watch            # Auto-poll Dropbox for new photos
+python src/main.py csv-import --csv-path FILE
+
+# ── Deal Analysis ───────────────────────────────────────────────
+python src/main.py comp --address "123 Main St"
+python src/main.py rehab --address "123 Main St" --tier 2
+python src/main.py analyze-deal --address "123 Main St" --purchase-price 150000
+python src/main.py market-analysis --counties Knox
+python src/main.py buyer-prospect --counties Knox
+python src/main.py deep-prospect --csv-path output/records.csv --depth 3
+
+# ── CRM Operations ─────────────────────────────────────────────
+python src/main.py manage-presets --discover
+python src/main.py manage-sold --months-back 12
+python src/main.py phone-validate --list-name "Foreclosure"
+python src/main.py lead-manage --lead-action qualify
+
+# ── Workflow Tools ──────────────────────────────────────────────
+python src/main.py setup-sequences --dry-run
+python src/main.py niche-sequential --channel sms --day 1
+python src/main.py playbook --blueprint wholesale --market knoxville
+```
+
+### Common Flags
+```bash
+--upload-datasift          # Upload results to DataSift CRM
+--notify-slack             # Send run summary to Slack/Discord
+--skip-smarty              # Skip address standardization
+--skip-zillow              # Skip Zillow enrichment
+--skip-obituary            # Skip deceased owner detection
+--split                    # Separate CSV per county + notice type
+--verbose / -v             # Debug logging
+```
+
+## Cloud Deployment (Apify)
+
+SiftStack runs as an [Apify Actor](https://apify.com) for scheduled daily automation:
+
+```bash
+# Install Apify CLI
+npm install -g apify-cli
+
+# Deploy
+apify login
+apify push
+
+# Configure schedule + secrets in Apify Console
+# The Actor runs the full pipeline: scrape → enrich → skip trace → CRM upload → Slack notify
+```
+
+## Architecture
+
+```
+src/
+├── main.py                  # CLI entry + Apify Actor entry
+├── scraper.py               # Playwright web automation + CAPTCHA
+├── captcha_solver.py        # 2Captcha reCAPTCHA v2 integration
+├── notice_parser.py         # Regex extraction (7 notice types)
+├── foreclosure_filter.py    # Trustee sale language matching
+├── pdf_importer.py          # Scanned PDF → OCR → parse
+├── photo_importer.py        # Courthouse photos → OpenCV → OCR → LLM
+├── dropbox_watcher.py       # Cursor-based Dropbox polling
+├── image_utils.py           # Shared OCR utilities (Tesseract)
+├── llm_parser.py            # Claude Haiku structured extraction
+├── llm_client.py            # Multi-backend LLM (Anthropic/Ollama/OpenRouter)
+├── enrichment_pipeline.py   # 10-step canonical pipeline
+├── address_standardizer.py  # Smarty USPS batch standardization
+├── property_enricher.py     # Zillow via OpenWeb Ninja API
+├── tax_enricher.py          # County tax API (parcel, delinquency)
+├── property_lookup.py       # Async 3-tier probate property search
+├── obituary_enricher.py     # Deceased detection + heir identification
+├── ancestry_enricher.py     # Ancestry.com SSDI automation
+├── entity_researcher.py     # LLC/Corp person extraction
+├── tracerfy_skip_tracer.py  # Batch skip trace (phones + emails)
+├── phone_validator.py       # Trestle 5-tier scoring
+├── data_formatter.py        # CSV dedup + export
+├── datasift_formatter.py    # 41-column DataSift CSV builder
+├── datasift_uploader.py     # Full CRM automation (Playwright)
+├── comp_analyzer.py         # Two-Bucket ARV analysis
+├── deal_analyzer.py         # MAO/ROI/financing scenarios
+├── rehab_estimator.py       # 4-tier room-by-room costs
+├── market_analyzer.py       # Zip code scoring (6 weights)
+├── buyer_prospector.py      # Cash buyer identification
+├── deep_prospector.py       # 4-level research + PDF reports
+├── lead_manager.py          # 4 Pillars qualification + STABM
+├── sequence_templates.py    # 26 TCA sequence definitions
+├── niche_sequential.py      # 21 filter preset orchestration
+├── playbook_generator.py    # SOP/script/checklist generator
+├── report_generator.py      # PDF deep prospecting reports
+├── excel_exporter.py        # Multi-sheet Excel workbooks
+├── drive_uploader.py        # Google Drive upload
+├── slack_notifier.py        # Slack/Discord notifications
+└── config.py                # Environment config + constants
+```
+
+## Notice Types Supported
+
+| Type | Source | What to Look For |
+|------|--------|-----------------|
+| Foreclosure | Web scrape, PDF | Trustee sale, deed of trust default |
+| Tax Sale | Web scrape, PDF | Delinquent property tax auction |
+| Tax Delinquent | Web scrape, PDF | Tax lien, unpaid property taxes |
+| Probate | Web scrape, Photos | Estate administration, executor appointment |
+| Eviction | Photos | Landlord-tenant, detainer warrant |
+| Code Violation | Photos | Building code, compliance deadline |
+| Divorce | Photos | Property division, marital assets |
+
+## API Cost Estimates
+
+Running daily in one county (Knox, TN — ~20-40 new notices/day):
+
+| Service | Monthly Cost | What It Does |
+|---------|-------------|-------------|
+| 2Captcha | ~$3 | CAPTCHA solving (~30 notices × 30 days) |
+| Smarty | Free | 250 lookups/month covers daily runs |
+| OpenWeb Ninja | Free | 100 lookups/month covers most records |
+| Anthropic (Haiku) | ~$2 | LLM parsing + obituary search |
+| Tracerfy | ~$20 | Skip trace @ $0.02/record |
+| Trestle | ~$15 | Phone scoring @ $0.015/phone |
+| **Total** | **~$40/month** | Full pipeline, one county |
+
+DataSift CRM subscription is separate ($97/month for unlimited skip trace plan).
+
+## REI Skill Library
+
+13 Claude Co-Work skill files for the DataSift community, distributed at [learn.datasift.ai/claude-skills-rei](https://learn.datasift.ai/claude-skills-rei). Each skill teaches Claude a specific REI workflow:
+
+| Skill | What It Does |
+|-------|-------------|
+| Market Research | Zip code scoring, Market Finder reports |
+| County Data | Notice extraction for all 7 types |
+| Buyer Prospector | Cash buyer identification from public records |
+| Real Estate Comping | Two-Bucket ARV with adjustment tables |
+| Rehab Estimator | 4-tier room-by-room cost estimation |
+| Deal Analyzer | Combined comp + rehab + MAO + financing |
+| Deep Prospecting | 4-level heir research framework |
+| Probate Property Finder | 3-tier property lookup for decedents |
+| Phone Validator | Trestle scoring with dial priority tiers |
+| Sequential Presets | 21 niche marketing filter presets |
+| Sift Sequences | 26 TCA automation templates |
+| Sift Operations | CRM operations encyclopedia |
+| Playbook Creator | SOP generator from transcripts |
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
+
+## Contributing
+
+1. Fork the repo
+2. Create a feature branch (`git checkout -b feature/your-market`)
+3. Commit your changes
+4. Push to the branch (`git push origin feature/your-market`)
+5. Open a Pull Request
+
+Built by [DataSift.ai](https://datasift.ai) for the REI community.
