@@ -1,8 +1,8 @@
 # SiftStack
 
-Full-stack real estate investing operations platform. Pulls data from any source — web scrapes, scanned PDFs, courthouse terminal photos, Dropbox uploads — standardizes everything through a 10-step enrichment pipeline, and pushes it into your CRM ready for outreach.
+Full-stack real estate investing operations platform built for [DataSift.ai](https://datasift.ai). Pulls data from any source — web scrapes, scanned PDFs, courthouse terminal photos, Dropbox uploads — standardizes everything through a 10-step enrichment pipeline, and pushes it directly into DataSift ready for niche sequential marketing.
 
-Built for the [DataSift.ai](https://datasift.ai) community. Works with any market, any county, any state.
+**Requires a DataSift.ai account.** Works with any market, any county, any state.
 
 ## What It Does
 
@@ -11,8 +11,8 @@ Built for the [DataSift.ai](https://datasift.ai) community. Works with any marke
 ```
   Web Scrape (CAPTCHA sites)  ──┐
   Scanned PDF Import (OCR)    ──┤
-  Courthouse Terminal Photos  ──┼──→  Enrichment Pipeline  ──→  CRM Upload  ──→  Marketing
-  Dropbox Auto-Polling        ──┤     (10 steps)                (DataSift)       (Sequences)
+  Courthouse Terminal Photos  ──┼──→  Enrichment Pipeline  ──→  DataSift Upload  ──→  Niche Sequential
+  Dropbox Auto-Polling        ──┤     (10 steps)                (automated)          Marketing
   CSV Re-Import               ──┘
 ```
 
@@ -43,14 +43,14 @@ Every record gets the same treatment, regardless of source:
 9. **Obituary Search** — deceased owner detection, heir identification, decision-maker ranking
 10. **Data Validation** — catch garbage OCR, verify required fields, compute mailable flag
 
-### CRM Automation (DataSift.ai)
+### DataSift.ai Automation
 
-After enrichment, records are automatically:
+SiftStack is purpose-built for the DataSift CRM. After enrichment, records are automatically:
 - Formatted into 41-column DataSift CSV with tags, lists, and custom fields
-- Uploaded via Playwright browser automation (5-step wizard)
+- Uploaded to DataSift via Playwright browser automation (5-step wizard)
 - Enriched with SiftMap property data (beds, baths, Zestimate)
-- Skip traced for phone numbers and emails
-- Routed into niche sequential marketing campaigns
+- Skip traced for phone numbers and emails (DataSift unlimited plan)
+- Routed into DataSift's niche sequential marketing campaigns (21 filter presets, 26 TCA sequences)
 
 ### Deal Analysis Tools
 
@@ -85,7 +85,7 @@ python src/main.py pdf-import --pdf-path ./tax_sale.pdf --pdf-county Knox
 # Or process courthouse photos
 python src/main.py photo-import --folder ./photos --photo-county Knox --photo-type probate
 
-# Full automated pipeline (scrape + enrich + upload to CRM + notify Slack)
+# Full automated pipeline (scrape + enrich + upload to DataSift + notify Slack)
 python src/main.py daily --upload-datasift --notify-slack
 ```
 
@@ -118,10 +118,10 @@ The enrichment pipeline (Smarty, Zillow, obituary search, skip trace) works nati
 | `TRACERFY_API_KEY` | [Tracerfy](https://tracerfy.com) | $0.02/record | Phones, emails, mailing addresses |
 | `TRESTLE_API_KEY` | [Trestle](https://trestleiq.com) | $0.015/phone | Phone scoring (5-tier dial priority) |
 
-### CRM + Notifications (optional)
+### DataSift + Notifications (required for full pipeline)
 | Variable | Service | What It Does |
 |----------|---------|-------------|
-| `DATASIFT_EMAIL` / `PASSWORD` | [DataSift.ai](https://datasift.ai) | Auto-upload + enrich + skip trace |
+| `DATASIFT_EMAIL` / `PASSWORD` | [DataSift.ai](https://datasift.ai) | Auto-upload + SiftMap enrich + skip trace |
 | `SLACK_WEBHOOK_URL` | Slack / Discord | Daily summaries + error alerts |
 
 ### All Intake Methods (optional)
@@ -165,7 +165,7 @@ python src/main.py playbook --blueprint wholesale --market knoxville
 
 ### Common Flags
 ```bash
---upload-datasift          # Upload results to DataSift CRM
+--upload-datasift          # Upload results to DataSift.ai
 --notify-slack             # Send run summary to Slack/Discord
 --skip-smarty              # Skip address standardization
 --skip-zillow              # Skip Zillow enrichment
@@ -187,7 +187,7 @@ apify login
 apify push
 
 # Configure schedule + secrets in Apify Console
-# The Actor runs the full pipeline: scrape → enrich → skip trace → CRM upload → Slack notify
+# The Actor runs the full pipeline: scrape → enrich → skip trace → DataSift upload → Slack notify
 ```
 
 ## Architecture
@@ -217,7 +217,7 @@ src/
 ├── phone_validator.py       # Trestle 5-tier scoring
 ├── data_formatter.py        # CSV dedup + export
 ├── datasift_formatter.py    # 41-column DataSift CSV builder
-├── datasift_uploader.py     # Full CRM automation (Playwright)
+├── datasift_uploader.py     # Full DataSift automation (Playwright)
 ├── comp_analyzer.py         # Two-Bucket ARV analysis
 ├── deal_analyzer.py         # MAO/ROI/financing scenarios
 ├── rehab_estimator.py       # 4-tier room-by-room costs
@@ -261,7 +261,7 @@ Running daily in one county (Knox, TN — ~20-40 new notices/day):
 | Trestle | ~$15 | Phone scoring @ $0.015/phone |
 | **Total** | **~$40/month** | Full pipeline, one county |
 
-DataSift CRM subscription is separate ($97/month for unlimited skip trace plan).
+Requires a [DataSift.ai](https://datasift.ai) subscription ($97/month for unlimited skip trace plan).
 
 ## REI Skill Library
 
