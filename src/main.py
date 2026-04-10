@@ -178,9 +178,6 @@ async def actor_main() -> None:
         drive_key_b64 = actor_input.get("google_service_account_key", "")
 
         # Pipeline toggles
-        do_upload_datasift = actor_input.get("upload_datasift", True)
-        do_enrich_datasift = actor_input.get("enrich_datasift", True)
-        do_skip_trace_datasift = actor_input.get("skip_trace_datasift", True)
         do_tracerfy = actor_input.get("run_tracerfy", True)
         do_notify_slack = actor_input.get("notify_slack", True)
 
@@ -392,51 +389,50 @@ async def actor_main() -> None:
             elif drive_folder_id:
                 Actor.log.warning("google_drive_folder_id set but google_service_account_key missing — skipping Drive upload")
 
-            # ── DataSift Upload ───────────────────────────────────────
-            upload_result = None
-            if do_upload_datasift and config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD:
-                Actor.log.info("Uploading to DataSift.ai...")
-                try:
-                    from datasift_formatter import write_datasift_split_csvs
-                    from datasift_uploader import upload_datasift_split, upload_to_datasift
+            # ── DataSift CSVs → KVS (manual upload) ─────────────────
+            # Generate DataSift-formatted CSVs and save to Apify KVS
+            # for manual download + upload to DataSift (more reliable than
+            # automated Playwright upload in headless cloud containers).
+            datasift_csv_urls = []
+            try:
+                from datasift_formatter import write_datasift_split_csvs
 
-                    csv_infos = write_datasift_split_csvs(notices)
-                    for info in csv_infos:
-                        Actor.log.info("DataSift CSV (%s): %s", info["label"], info["path"])
-
-                    if len(csv_infos) > 1:
-                        upload_result = await upload_datasift_split(
-                            csv_infos,
-                            enrich=do_enrich_datasift,
-                            skip_trace=do_skip_trace_datasift,
-                        )
-                    else:
-                        upload_result = await upload_to_datasift(
-                            csv_infos[0]["path"],
-                            enrich=do_enrich_datasift,
-                            skip_trace=do_skip_trace_datasift,
-                        )
-
-                    if upload_result.get("success"):
-                        Actor.log.info("DataSift upload: %s", upload_result.get("message", "OK"))
-                    else:
-                        Actor.log.error("DataSift upload failed: %s", upload_result.get("message"))
-                except Exception as e:
-                    Actor.log.error("DataSift upload error: %s", e)
-                    upload_result = {"success": False, "message": str(e)}
-            elif do_upload_datasift:
-                Actor.log.info("DataSift upload skipped — no credentials configured")
+                csv_infos = write_datasift_split_csvs(notices)
+                kvs = await Actor.open_key_value_store()
+                for info in csv_infos:
+                    key = f"datasift_{info['label'].lower().replace(' ', '_')}.csv"
+                    with open(info["path"], "rb") as f:
+                        await kvs.set_value(key, f.read(), content_type="text/csv")
+                    # Build public download URL
+                    kvs_id = kvs._id if hasattr(kvs, '_id') else ''
+                    url = f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{key}"
+                    datasift_csv_urls.append({"label": info["label"], "url": url, "records": info.get("count", "?")})
+                    Actor.log.info("DataSift CSV (%s) saved to KVS: %s", info["label"], key)
+            except Exception as e:
+                Actor.log.error("DataSift CSV generation failed: %s", e)
 
             # ── Slack Notification ────────────────────────────────────
             elapsed_min = (_time() - pipeline_start) / 60
             if do_notify_slack and config.SLACK_WEBHOOK_URL:
                 try:
-                    from slack_notifier import send_slack_notification
+                    from slack_notifier import send_slack_notification, _send_webhook
+
+                    # Send standard run summary
                     send_slack_notification(
                         notices,
-                        upload_result=upload_result,
                         elapsed_min=elapsed_min,
                     )
+
+                    # Send DataSift CSV download links as a follow-up message
+                    if datasift_csv_urls:
+                        csv_lines = [
+                            "*DataSift CSVs ready for manual upload:*",
+                        ]
+                        for csv_info in datasift_csv_urls:
+                            csv_lines.append(f"  <{csv_info['url']}|{csv_info['label']}> ({csv_info['records']} records)")
+                        csv_lines.append("_Upload at app.reisift.io → Upload File → Add Data_")
+                        _send_webhook("\n".join(csv_lines))
+
                     Actor.log.info("Slack notification sent")
                 except Exception as e:
                     Actor.log.warning("Slack notification failed: %s", e)
