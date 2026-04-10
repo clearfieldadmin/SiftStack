@@ -413,14 +413,38 @@ async def actor_main() -> None:
 
             # ── Slack Notification ────────────────────────────────────
             elapsed_min = (_time() - pipeline_start) / 60
+
+            # Compute estimated run cost
+            cost_breakdown = {}
+            # 2Captcha: $0.003 per solve, ~1 solve per notice scraped
+            captcha_count = total  # each notice detail page requires a CAPTCHA
+            cost_breakdown["2Captcha"] = round(captcha_count * 0.003, 2)
+            # Anthropic Haiku: ~$0.001 per record (LLM parsing + obituary search)
+            if config.ANTHROPIC_API_KEY:
+                cost_breakdown["Anthropic (Haiku)"] = round(total * 0.001, 3)
+            # Tracerfy: actual cost from batch stats
+            if tracerfy_stats and tracerfy_stats.get("cost", 0) > 0:
+                cost_breakdown["Tracerfy"] = round(tracerfy_stats["cost"], 2)
+            # Smarty: free tier 250/month, $0.01 after
+            smarty_count = sum(1 for n in notices if n.dpv_match_code)
+            if smarty_count > 0:
+                cost_breakdown["Smarty"] = round(max(0, smarty_count - 250) * 0.01, 2) if smarty_count > 250 else 0.0
+            # Zillow (OpenWeb Ninja): free tier 100/month, $0.01 after
+            zillow_count = sum(1 for n in notices if n.estimated_value)
+            if zillow_count > 0:
+                cost_breakdown["Zillow"] = round(max(0, zillow_count - 100) * 0.01, 2) if zillow_count > 100 else 0.0
+            # Remove zero-cost entries for cleaner display
+            cost_breakdown = {k: v for k, v in cost_breakdown.items() if v > 0}
+
             if do_notify_slack and config.SLACK_WEBHOOK_URL:
                 try:
                     from slack_notifier import send_slack_notification, _send_webhook
 
-                    # Send standard run summary
+                    # Send standard run summary with cost breakdown
                     send_slack_notification(
                         notices,
                         elapsed_min=elapsed_min,
+                        cost_breakdown=cost_breakdown,
                     )
 
                     # Send DataSift CSV download links as a follow-up message

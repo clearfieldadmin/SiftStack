@@ -166,6 +166,7 @@ def build_summary(
     upload_result: dict | None = None,
     elapsed_min: float = 0,
     api_cost: float = 0,
+    cost_breakdown: dict | None = None,
 ) -> str:
     """Build a plain-text run summary for Slack/Discord.
 
@@ -173,7 +174,8 @@ def build_summary(
         notices: All notices from this run.
         upload_result: DataSift upload result dict (optional).
         elapsed_min: Pipeline elapsed time in minutes.
-        api_cost: Estimated Haiku API cost for this run.
+        api_cost: Estimated Haiku API cost for this run (legacy, use cost_breakdown).
+        cost_breakdown: Dict of service -> cost, e.g. {"2Captcha": 0.09, "Tracerfy": 0.26}.
     """
     total = len(notices)
     by_county = _count_by_field(notices, "county")
@@ -245,14 +247,23 @@ def build_summary(
             lines.append(f"  ... and {len(upcoming) - 5} more")
 
     # Pipeline stats
-    if elapsed_min > 0 or api_cost > 0:
-        lines.append("")
-        stats = []
-        if elapsed_min > 0:
-            stats.append(f"Pipeline: {elapsed_min:.0f} min")
-        if api_cost > 0:
-            stats.append(f"Haiku API: ${api_cost:.2f}")
+    lines.append("")
+    stats = []
+    if elapsed_min > 0:
+        stats.append(f"Pipeline: {elapsed_min:.0f} min")
+    if api_cost > 0 and not cost_breakdown:
+        stats.append(f"Haiku API: ${api_cost:.2f}")
+    if stats:
         lines.append(" | ".join(stats))
+
+    # Cost breakdown
+    if cost_breakdown:
+        total_cost = sum(cost_breakdown.values())
+        lines.append("")
+        lines.append(f"*Estimated run cost:* ${total_cost:.2f}")
+        for service, cost in cost_breakdown.items():
+            if cost > 0:
+                lines.append(f"  {service}: ${cost:.2f}")
 
     return "\n".join(lines)
 
@@ -264,6 +275,7 @@ def send_slack_notification(
     upload_result: dict | None = None,
     elapsed_min: float = 0,
     api_cost: float = 0,
+    cost_breakdown: dict | None = None,
 ) -> bool:
     """Send a run summary to Slack/Discord webhook.
 
@@ -272,7 +284,8 @@ def send_slack_notification(
         webhook_url: Slack/Discord webhook URL (defaults to SLACK_WEBHOOK_URL env).
         upload_result: DataSift upload result dict.
         elapsed_min: Pipeline time in minutes.
-        api_cost: Estimated API cost.
+        api_cost: Estimated API cost (legacy, use cost_breakdown).
+        cost_breakdown: Dict of service -> cost for itemized cost reporting.
 
     Returns:
         True if notification sent successfully.
@@ -287,6 +300,7 @@ def send_slack_notification(
         upload_result=upload_result,
         elapsed_min=elapsed_min,
         api_cost=api_cost,
+        cost_breakdown=cost_breakdown,
     )
 
     sent = _send_webhook(text, webhook_url)
