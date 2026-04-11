@@ -361,9 +361,30 @@ async def actor_main() -> None:
             elif do_tracerfy:
                 Actor.log.info("Tracerfy skipped — no API key configured")
 
+            # ── Generate Deep Prospecting PDFs ────────────────────────
+            pdf_urls = []
+            try:
+                from report_generator import generate_record_pdf
+                kvs = await Actor.open_key_value_store()
+                kvs_id = kvs._id if hasattr(kvs, '_id') else ''
+                report_dir = Path("output/reports")
+
+                for n in notices:
+                    pdf_path = generate_record_pdf(n, output_dir=report_dir)
+                    key = pdf_path.name
+                    with open(pdf_path, "rb") as f:
+                        await kvs.set_value(key, f.read(), content_type="application/pdf")
+                    url = f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{key}"
+                    pdf_urls.append({"address": n.address, "url": url})
+
+                Actor.log.info("Generated %d deep prospecting PDFs", len(pdf_urls))
+            except Exception as e:
+                Actor.log.warning("PDF generation failed: %s — continuing", e)
+
             # ── Write CSV ─────────────────────────────────────────────
             csv_path = write_csv(notices)
-            kvs = await Actor.open_key_value_store()
+            if not kvs:
+                kvs = await Actor.open_key_value_store()
             with open(csv_path, "rb") as f:
                 await kvs.set_value("output.csv", f.read(), content_type="text/csv")
             Actor.log.info("CSV saved to key-value store as 'output.csv'")
@@ -456,6 +477,16 @@ async def actor_main() -> None:
                             csv_lines.append(f"  <{csv_info['url']}|{csv_info['label']}> ({csv_info['records']} records)")
                         csv_lines.append("_Upload at app.reisift.io → Upload File → Add Data_")
                         _send_webhook("\n".join(csv_lines))
+
+                    # Send PDF download links
+                    if pdf_urls:
+                        pdf_lines = [
+                            f"*Deep Prospecting PDFs ({len(pdf_urls)} records):*",
+                        ]
+                        for pdf_info in pdf_urls:
+                            pdf_lines.append(f"  <{pdf_info['url']}|{pdf_info['address']}>")
+                        pdf_lines.append("_Attach to DataSift record → Notes or Files_")
+                        _send_webhook("\n".join(pdf_lines))
 
                     Actor.log.info("Slack notification sent")
                 except Exception as e:
