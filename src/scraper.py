@@ -22,6 +22,8 @@ from config import (
     SAVED_SEARCHES,
     SEEN_IDS_FILE,
     SEEN_IDS_PRUNE_DAYS,
+    CAPTCHA_FAILED_IDS_FILE,
+    CAPTCHA_FAILED_PRUNE_DAYS,
     SMART_SEARCH_URL,
     STATE_FILE,
     SavedSearch,
@@ -189,6 +191,7 @@ async def run_saved_search(
     start_page: int = 1,
     max_notices: int = 0,
     seen_ids: dict[str, str] | None = None,
+    captcha_failed_ids: dict[str, dict] | None = None,
 ) -> list[NoticeData]:
     """Select a saved search from the dropdown, paginate, and scrape each notice.
 
@@ -253,7 +256,9 @@ async def run_saved_search(
 
     while True:
         logger.info("  Scraping page %d/%d", current_page, total_pages)
-        page_notices = await _scrape_results_page(page, search, since_date, llm_api_key, seen_ids)
+        page_notices = await _scrape_results_page(
+            page, search, since_date, llm_api_key, seen_ids, captcha_failed_ids,
+        )
         notices.extend(page_notices)
 
         # Push this page's results immediately so they survive timeouts
@@ -308,16 +313,35 @@ async def _scrape_results_page(
     since_date: str | None,
     llm_api_key: str | None = None,
     seen_ids: dict[str, str] | None = None,
+    captcha_failed_ids: dict[str, dict] | None = None,
 ) -> list[NoticeData]:
     """Click each View button on a results page, solve CAPTCHA, parse notice."""
     notices: list[NoticeData] = []
 
-    # Wait for view buttons to be stable in the DOM before interacting
+    # Wait for view buttons to be stable in the DOM before interacting.
+    # SPA hydration over residential proxies can be slow — try 30s, then one
+    # recovery attempt (networkidle + re-query) before giving up. A silent
+    # empty return here is what caused the 2026-04-15 Blount miss.
     try:
-        await page.wait_for_selector(SEL_VIEW_BUTTON_PATTERN, state="attached", timeout=10_000)
+        await page.wait_for_selector(SEL_VIEW_BUTTON_PATTERN, state="attached", timeout=30_000)
     except PwTimeout:
-        logger.warning("  No view buttons appeared within 10s")
-        return notices
+        logger.warning(
+            "  No view buttons for %s after 30s — waiting for networkidle and retrying",
+            search.saved_search_name,
+        )
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+        except PwTimeout:
+            pass
+        try:
+            await page.wait_for_selector(SEL_VIEW_BUTTON_PATTERN, state="attached", timeout=15_000)
+        except PwTimeout:
+            logger.warning(
+                "  %s returned zero results after retry — check site manually "
+                "(saved search may have legitimate hits that didn't render)",
+                search.saved_search_name,
+            )
+            return notices
 
     # Find all View buttons in the results grid
     view_buttons = await page.query_selector_all(SEL_VIEW_BUTTON_PATTERN)
@@ -325,6 +349,10 @@ async def _scrape_results_page(
     logger.info("  %d results on this page", num_results)
 
     if num_results == 0:
+        logger.warning(
+            "  %s: selector matched but 0 buttons returned — treating as empty page",
+            search.saved_search_name,
+        )
         return notices
 
     # We need to iterate by index because clicking a view button navigates away.
@@ -379,6 +407,18 @@ async def _scrape_results_page(
                     # Need to solve CAPTCHA
                     if not await solve_captcha_and_view(page):
                         logger.warning("  CAPTCHA solve failed for result %d (attempt %d)", idx + 1, attempt)
+                        # Track which IDs we lost to CAPTCHA failure so the next run
+                        # can prioritize them and the end-of-run summary surfaces them.
+                        # Record on the final scraper-level attempt, not intermediate retries.
+                        if attempt >= MAX_RETRIES and captcha_failed_ids is not None and notice_id:
+                            captcha_failed_ids[notice_id] = {
+                                "url": page.url,
+                                "search": search.saved_search_name,
+                                "county": search.county,
+                                "notice_type": search.notice_type,
+                                "pub_date": pub_date or "",
+                                "first_seen": datetime.now().strftime("%Y-%m-%d"),
+                            }
                         # Navigate back and retry
                         await page.go_back()
                         await page.wait_for_load_state("networkidle")
@@ -596,6 +636,36 @@ def save_seen_ids(seen: dict[str, str]) -> None:
     config.save_state(SEEN_IDS_FILE, seen)
 
 
+def load_captcha_failed_ids() -> dict[str, dict]:
+    """Load notices that exhausted CAPTCHA retries in prior runs.
+
+    Pruned to CAPTCHA_FAILED_PRUNE_DAYS (default 14) — short window because
+    most failures are transient proxy/2Captcha hiccups; if a notice is still
+    failing after two weeks the site likely changed or the notice was removed.
+
+    Structure: {notice_id: {url, search, county, notice_type, pub_date, first_seen}}.
+    """
+    data = config.load_state(CAPTCHA_FAILED_IDS_FILE)
+    if not data:
+        return {}
+    cutoff = (datetime.now() - timedelta(days=CAPTCHA_FAILED_PRUNE_DAYS)).strftime("%Y-%m-%d")
+    pruned = {
+        nid: meta for nid, meta in data.items()
+        if isinstance(meta, dict) and meta.get("first_seen", "") >= cutoff
+    }
+    if len(pruned) < len(data):
+        logger.info(
+            "Pruned %d CAPTCHA-failed IDs older than %d days",
+            len(data) - len(pruned), CAPTCHA_FAILED_PRUNE_DAYS,
+        )
+    return pruned
+
+
+def save_captcha_failed_ids(failed: dict[str, dict]) -> None:
+    """Persist the CAPTCHA-failed-notice-ID cache to disk."""
+    config.save_state(CAPTCHA_FAILED_IDS_FILE, failed)
+
+
 # ── Main Entry Point ─────────────────────────────────────────────────
 
 
@@ -609,6 +679,7 @@ async def scrape_all(
     start_page: int = 1,
     max_notices: int = 0,
     seen_ids: dict[str, str] | None = None,
+    captcha_failed_ids: dict[str, dict] | None = None,
     on_search_complete=None,
 ) -> list[NoticeData]:
     """Main entry point for scraping.
@@ -637,6 +708,17 @@ async def scrape_all(
     if seen_ids is None:
         seen_ids = load_seen_ids()
     logger.info("Cross-run dedup: %d previously-seen notice IDs loaded", len(seen_ids))
+
+    # Load the CAPTCHA-failed-ID queue from prior runs so the end-of-run summary
+    # can show which IDs have been repeatedly failing, not just the current run.
+    if captcha_failed_ids is None:
+        captcha_failed_ids = load_captcha_failed_ids()
+    prior_failed = len(captcha_failed_ids)
+    if prior_failed:
+        logger.info(
+            "CAPTCHA failure queue: %d IDs from prior runs still pending",
+            prior_failed,
+        )
 
     # Determine date cutoff
     since_date: str | None = None
@@ -709,6 +791,7 @@ async def scrape_all(
                     page, search, since_date, llm_api_key,
                     on_page_batch=on_batch, start_page=start_page,
                     max_notices=remaining, seen_ids=seen_ids,
+                    captcha_failed_ids=captcha_failed_ids,
                 )
                 all_notices.extend(search_notices)
             except Exception:
@@ -746,6 +829,26 @@ async def scrape_all(
     if mode == "daily":
         save_last_run_date()
     save_seen_ids(seen_ids)
+
+    # Persist CAPTCHA failures + surface a prominent summary so operators
+    # notice silent drops. Previously these notices disappeared from the
+    # pipeline with no end-of-run signal; now they show up in the log and
+    # on disk for follow-up.
+    save_captcha_failed_ids(captcha_failed_ids)
+    new_failed = len(captcha_failed_ids) - prior_failed
+    if new_failed > 0:
+        by_search: dict[str, int] = {}
+        for meta in captcha_failed_ids.values():
+            if not isinstance(meta, dict):
+                continue
+            s = meta.get("search", "unknown")
+            by_search[s] = by_search.get(s, 0) + 1
+        breakdown = ", ".join(f"{s}: {c}" for s, c in sorted(by_search.items()))
+        logger.warning(
+            "CAPTCHA DROPOUT: %d new notice(s) failed all retries this run "
+            "(total queue: %d). Breakdown: %s. See captcha_failed_ids.json.",
+            new_failed, len(captcha_failed_ids), breakdown,
+        )
 
     logger.info("Total notices scraped: %d", len(all_notices))
     return all_notices

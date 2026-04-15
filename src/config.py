@@ -17,6 +17,11 @@ LOG_DIR = PROJECT_ROOT / "logs"
 STATE_FILE = PROJECT_ROOT / "last_run.json"
 SEEN_IDS_FILE = PROJECT_ROOT / "seen_ids.json"
 SEEN_IDS_PRUNE_DAYS = 90
+# Notices that exhausted all CAPTCHA retries during scraping.
+# Persisted so the next run's summary can surface them instead of
+# silently dropping — and a future retry pass can prioritize them.
+CAPTCHA_FAILED_IDS_FILE = PROJECT_ROOT / "captcha_failed_ids.json"
+CAPTCHA_FAILED_PRUNE_DAYS = 14
 COOKIES_FILE = PROJECT_ROOT / "cookies.json"
 DROPBOX_STATE_FILE = PROJECT_ROOT / "dropbox_state.json"
 PHOTO_STATE_FILE = PROJECT_ROOT / "photo_state.json"

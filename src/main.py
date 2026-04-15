@@ -1761,19 +1761,35 @@ def _run_scrape_pipeline(args, searches) -> None:
 
     if not notices:
         logging.warning("No notices found")
+        # Send Slack ping even on empty runs so operators know the job
+        # ran successfully (vs silently dying). Previously sys.exit(0)
+        # fired before the Slack block at the bottom of this function.
+        if getattr(args, "notify_slack", False):
+            try:
+                from slack_notifier import send_slack_notification
+                send_slack_notification([])
+            except Exception:
+                logging.exception("Slack notification for empty run failed")
         sys.exit(0)
 
     # Tracerfy batch skip trace (phones + emails for all records)
+    tiers_map: dict = {}
+    tracerfy_stats: dict = {}
     if not getattr(args, "skip_tracerfy", False):
         import config as cfg
         if cfg.TRACERFY_API_KEY:
             from tracerfy_skip_tracer import batch_skip_trace
             tracerfy_stats = batch_skip_trace(notices)
+            if tracerfy_stats.get("credits_exhausted"):
+                logging.error(
+                    "TRACERFY OUT OF CREDITS — skip trace disabled for this run. "
+                    "Add credits at https://tracerfy.com/billing to resume phone/email lookups."
+                )
             logging.info(
                 "Tracerfy: %d/%d matched, %d phones, %d emails, $%.2f",
-                tracerfy_stats["matched"], tracerfy_stats["submitted"],
-                tracerfy_stats["phones_found"], tracerfy_stats["emails_found"],
-                tracerfy_stats["cost"],
+                tracerfy_stats.get("matched", 0), tracerfy_stats.get("submitted", 0),
+                tracerfy_stats.get("phones_found", 0), tracerfy_stats.get("emails_found", 0),
+                tracerfy_stats.get("cost", 0.0),
             )
             # Score every phone (DM #1 + all heirs) — writes per-heir phone_scores
             # into heir_map_json so DataSift Notes and PDFs can surface tier badges.
@@ -1799,6 +1815,34 @@ def _run_scrape_pipeline(args, searches) -> None:
     else:
         path = write_csv(notices)
         logging.info("Output: %s", path)
+
+    # Generate deep-prospecting PDFs for deceased/DM/heir records.
+    # Matches the Apify branch behavior so CLI runs get the same reports —
+    # includes the Case Summary section added for deceased-owner records.
+    dp_candidates = [
+        n for n in notices
+        if n.owner_deceased == "yes" or n.heir_map_json or n.decision_maker_name
+    ]
+    if dp_candidates:
+        try:
+            from report_generator import generate_record_pdf
+            report_dir = Path("output/reports")
+            generated = 0
+            for n in dp_candidates:
+                try:
+                    pdf_path = generate_record_pdf(
+                        n, output_dir=report_dir, phone_tiers=tiers_map,
+                    )
+                    logging.info("Report generated: %s", pdf_path)
+                    generated += 1
+                except Exception:
+                    logging.exception("PDF generation failed for %s", n.address)
+            logging.info(
+                "Generated %d/%d deep-prospecting PDFs in %s",
+                generated, len(dp_candidates), report_dir,
+            )
+        except Exception:
+            logging.exception("Report generator import failed")
 
     # DataSift upload
     upload_result = None

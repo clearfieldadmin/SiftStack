@@ -1169,7 +1169,14 @@ def _lookup_dm_address_tracerfy(name: str, city: str,
             },
             timeout=30,
         )
-        if resp.status_code != 200:
+        if resp.status_code == 402:
+            # Only surface this as WARNING once per run; subsequent calls
+            # in the same process will still hit 402 and repeat the message.
+            logger.warning(
+                "Tracerfy instant 402 for %s — INSUFFICIENT CREDITS: %s",
+                name, resp.text[:200],
+            )
+        elif resp.status_code != 200:
             logger.debug("Tracerfy instant %d for %s: %s",
                          resp.status_code, name, resp.text[:500])
         resp.raise_for_status()

@@ -217,6 +217,7 @@ def batch_skip_trace(
         "cost": 0.0,
         "signing_heirs_traced": 0,
         "heir_addresses_filled": 0,
+        "credits_exhausted": False,
     }
 
     if not cfg.TRACERFY_API_KEY:
@@ -300,6 +301,15 @@ def batch_skip_trace(
             files={"csv_file": ("skip_trace_batch.csv", csv_content, "text/csv")},
             timeout=30,
         )
+        if resp.status_code == 402:
+            # Credits exhausted — surface explicitly so the pipeline summary
+            # shows this as an account issue rather than a silent 0-match.
+            stats["credits_exhausted"] = True
+            logger.error(
+                "Tracerfy batch 402 — INSUFFICIENT CREDITS. Response: %s",
+                resp.text[:500],
+            )
+            return stats
         if resp.status_code != 200:
             logger.warning("Tracerfy batch %d response: %s",
                            resp.status_code, resp.text[:500])

@@ -167,6 +167,8 @@ def build_summary(
     elapsed_min: float = 0,
     api_cost: float = 0,
     cost_breakdown: dict | None = None,
+    csv_link: str | None = None,
+    pdf_links: list[tuple[str, str]] | None = None,
 ) -> str:
     """Build a plain-text run summary for Slack/Discord.
 
@@ -256,6 +258,19 @@ def build_summary(
     if stats:
         lines.append(" | ".join(stats))
 
+    # File links (CSV + deep-prospecting PDFs)
+    if csv_link or pdf_links:
+        lines.append("")
+        lines.append("*Files*")
+        if csv_link:
+            lines.append(f"  CSV: <{csv_link}|Download>")
+        if pdf_links:
+            lines.append(f"  PDFs ({len(pdf_links)}):")
+            for addr, url in pdf_links[:10]:
+                lines.append(f"    <{url}|{addr}>")
+            if len(pdf_links) > 10:
+                lines.append(f"    ... and {len(pdf_links) - 10} more")
+
     # Cost breakdown
     if cost_breakdown:
         total_cost = sum(cost_breakdown.values())
@@ -276,6 +291,8 @@ def send_slack_notification(
     elapsed_min: float = 0,
     api_cost: float = 0,
     cost_breakdown: dict | None = None,
+    csv_link: str | None = None,
+    pdf_links: list[tuple[str, str]] | None = None,
 ) -> bool:
     """Send a run summary to Slack/Discord webhook.
 
@@ -301,6 +318,8 @@ def send_slack_notification(
         elapsed_min=elapsed_min,
         api_cost=api_cost,
         cost_breakdown=cost_breakdown,
+        csv_link=csv_link,
+        pdf_links=pdf_links,
     )
 
     sent = _send_webhook(text, webhook_url)
