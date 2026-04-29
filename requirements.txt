@@ -1,4 +1,7 @@
 playwright>=1.40.0
+playwright-stealth>=1.0.6
+scrapfly-sdk>=0.8.0
+capsolver>=0.0.4
 2captcha-python>=1.2.0
 python-dotenv>=1.0.0
 apify>=2.0.0

@@ -37,7 +37,9 @@ LOG_DIR.mkdir(exist_ok=True)
 # ── Credentials ────────────────────────────────────────────────────────
 TNPN_EMAIL = os.getenv("TNPN_EMAIL", "")
 TNPN_PASSWORD = os.getenv("TNPN_PASSWORD", "")
-CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY", "")  # 2Captcha API key
+CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY", "")      # 2Captcha API key (legacy TN scraper)
+CAPSOLVER_API_KEY = os.getenv("CAPSOLVER_API_KEY", "") # CapSolver — FJD reCAPTCHA v3
+SCRAPFLY_API_KEY = os.getenv("SCRAPFLY_API_KEY", "")   # Scrapfly — Bid4Assets ASP bypass
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # Claude Haiku for LLM parsing
 SMARTY_AUTH_ID = os.getenv("SMARTY_AUTH_ID", "")        # Smarty address standardization
 SMARTY_AUTH_TOKEN = os.getenv("SMARTY_AUTH_TOKEN", "")
@@ -103,6 +105,131 @@ TESSERACT_PSM_PHOTO = 4  # assume single column of variable-size text — best f
 
 # ── Notice Types ───────────────────────────────────────────────────────
 NOTICE_TYPES = ["foreclosure", "probate"]
+
+# ── Philadelphia, PA — Source Definitions ─────────────────────────────
+
+@dataclass
+class PhillySource:
+    """One Philadelphia distress-notice scrape source."""
+    source_id: str       # e.g. "li_violations"
+    notice_type: str     # e.g. "CODE_VIOLATION"
+    county: str          # "Philadelphia"
+    state: str           # "PA"
+    description: str
+    enabled: bool = True
+    # ── Cadence metadata (consumed by GitHub Actions scheduler) ───────────
+    # cadence:     "daily" | "twice_weekly" | "weekly" | "disabled"
+    # run_days_et: comma-sep days for non-daily cadences, e.g. "Mon,Thu"
+    # run_time_et: HH:MM in US/Eastern — staggered 15 min apart to avoid
+    #              concurrent API/proxy load across sources.
+    cadence: str = "daily"
+    run_days_et: str = ""        # blank = every day (for "daily")
+    run_time_et: str = ""        # HH:MM ET
+
+
+# SOURCE 1 — L&I Code Violations (Carto SQL API)
+PHILLY_CARTO_API_URL = "https://phl.carto.com/api/v2/sql"
+PHILLY_CARTO_VIOLATIONS_TABLE = "violations"
+PHILLY_CARTO_LOOKBACK_DAYS = 7
+
+# SOURCE 2 — Sheriff Mortgage Foreclosure Sales (Bid4Assets)
+# NOTE: migrated from salesweb.civilview.com in 2021 — do NOT use CivilView
+# Bid4Assets uses Akamai WAF — plain Playwright returns "Access Denied".
+# Set PHILLY_PROXY_URL to a residential proxy (e.g. Bright Data, Oxylabs)
+# to bypass the CDN block.  Format: http://user:pass@host:port
+PHILLY_PROXY_URL = os.getenv("PHILLY_PROXY_URL", "")
+PHILLY_BID4ASSETS_MORTGAGE_URL = "https://www.bid4assets.com/philaforeclosures"
+
+# SOURCE 3 — Sheriff Tax Sales (Bid4Assets, same parser as SOURCE 2)
+PHILLY_BID4ASSETS_TAX_URL = "https://www.bid4assets.com/philataxsales"
+
+# hCaptcha sitekey for Bid4Assets (Sources 2 & 3).
+# The scraper also tries to read it live from the DOM via [data-sitekey];
+# this constant is the fallback if the DOM attribute is absent.
+BID4ASSETS_HCAPTCHA_SITEKEY = os.getenv("BID4ASSETS_HCAPTCHA_SITEKEY", "")
+
+# SOURCE 4 — Lis Pendens / Pre-Foreclosure (FJD Civil eFiling)
+# Strategy: scrape search-results page only — do NOT follow individual
+# docket links ($5/report). Extract case caption, parties, filing date.
+PHILLY_FJD_CIVIL_URL = "https://fjdefile.phila.gov/efsfjd/zk_fjd_public_qry_03.zp_dktrpt_frames"
+PHILLY_FJD_CIVIL_LOOKBACK_DAYS = 7
+
+# SOURCE 5 — Evictions (Philadelphia Municipal Court CLAIMS)
+# Separate system from SOURCE 4. Case format: LT-MM-YY-NN-NNNN
+# Lower priority — enabled separately after core sources validated.
+PHILLY_FJD_CLAIMS_URL = "https://fjdclaims.phila.gov/phmuni/login.do"
+PHILLY_FJD_CLAIMS_LOOKBACK_DAYS = 7
+
+# SOURCE 6 — Probate / Estate Notices (Philadelphia Inquirer Marketplace)
+# No auth required. Cross-reference decedent against OPA to drop non-property owners.
+PHILLY_INQUIRER_ESTATE_URL = "https://marketplace.inquirer.com/pa/estate-notice/search"
+PHILLY_INQUIRER_LOOKBACK_DAYS = 7
+
+# OPA property lookup used by SOURCE 6 probate cross-reference.
+# Queries the same Carto endpoint; OPA properties are in opa_properties_public.
+PHILLY_OPA_TABLE = "opa_properties_public"
+
+PHILLY_SOURCES: list[PhillySource] = [
+    PhillySource(
+        source_id="li_violations",
+        notice_type="CODE_VIOLATION",
+        county="Philadelphia",
+        state="PA",
+        description="L&I Code Violations — Carto SQL API (all violations, owner_status + count tags)",
+        cadence="daily",
+        run_time_et="07:00",
+    ),
+    PhillySource(
+        source_id="inquirer_probate",
+        notice_type="PROBATE_ESTATE",
+        county="Philadelphia",
+        state="PA",
+        description="Probate / Estate Notices — Inquirer Marketplace (Filter 1 geo, fuzzy OPA name match)",
+        cadence="daily",
+        run_time_et="07:15",
+    ),
+    PhillySource(
+        source_id="bid4assets_mortgage",
+        notice_type="SHERIFF_MORTGAGE_FORECLOSURE",
+        county="Philadelphia",
+        state="PA",
+        description="Sheriff Mortgage Foreclosure Sales — Bid4Assets (Scrapfly ASP+JS, inline JSON)",
+        cadence="twice_weekly",
+        run_days_et="Mon,Thu",
+        run_time_et="07:30",
+    ),
+    PhillySource(
+        source_id="bid4assets_tax",
+        notice_type="TAX_SALE",
+        county="Philadelphia",
+        state="PA",
+        description="Sheriff Tax Sales — Bid4Assets (Scrapfly ASP+JS, inline JSON)",
+        cadence="twice_weekly",
+        run_days_et="Mon,Thu",
+        run_time_et="07:45",
+    ),
+    PhillySource(
+        source_id="fjd_evictions",
+        notice_type="EVICTION",
+        county="Philadelphia",
+        state="PA",
+        description="Evictions — Philadelphia Municipal Court CLAIMS (eviction_count_for_owner, property_address via per-case CAPTCHA)",
+        cadence="daily",
+        run_time_et="08:00",
+    ),
+    # DEFERRED — FJD reCAPTCHA v3 score threshold unachievable via automated
+    # means as of April 2026. Revisit if score threshold changes or alternative
+    # authentication path becomes available.
+    PhillySource(
+        source_id="fjd_lis_pendens",
+        notice_type="LIS_PENDENS",
+        county="Philadelphia",
+        state="PA",
+        description="Lis Pendens / Pre-Foreclosure — FJD Civil eFiling (30-day lookback, 19 servicers)",
+        enabled=False,
+        cadence="disabled",
+    ),
+]
 
 
 @dataclass

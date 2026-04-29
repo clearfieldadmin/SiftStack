@@ -17,6 +17,7 @@ import time
 import requests
 
 import config as cfg
+from datasift_formatter import _is_entity_name, _split_name_opa
 from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
@@ -89,18 +90,28 @@ def _get_contacts_for_trace(
                         heir_name,
                     ))
     else:
-        # Living owner — single contact
-        name = (notice.owner_name or "").strip()
-        if name:
+        # Living owner — single contact.
+        # Prefer tax_owner_name (OPA LAST FIRST MIDDLE format) over owner_name for
+        # sources where owner_name holds a lender/plaintiff rather than the property
+        # owner (bid4assets) or where owner_name is also in OPA format (li_violations).
+        # Exception: PROBATE_ESTATE — owner_name is the PR/executor (FIRST LAST from
+        # notice text) and tax_owner_name is the deceased; trace the PR, not the decedent.
+        raw = (notice.owner_name or "").strip()
+        tax = (notice.tax_owner_name or "").strip()
+        if tax and not _is_entity_name(tax) and notice.notice_type != "PROBATE_ESTATE":
+            name = tax
+            first, last = _split_name_opa(name)
+        else:
+            name = raw
             first, last = _split_name(name)
-            if first and last:
-                contacts.append((
-                    first, last,
-                    notice.address or "",
-                    notice.city or "",
-                    notice.zip or "",
-                    name,
-                ))
+        if first and last:
+            contacts.append((
+                first, last,
+                notice.address or "",
+                notice.city or "",
+                notice.zip or "",
+                name,
+            ))
 
     return contacts
 

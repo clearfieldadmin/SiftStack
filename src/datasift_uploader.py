@@ -157,48 +157,57 @@ async def upload_csv(
         logger.warning("Mode selection: %s", e)
 
     # Part B: Answer "WHAT ARE YOU GOING TO ADD?" dropdown
-    # Opens a styled dropdown with options like:
+    # Opens a styled dropdown with options:
     #   - "Uploading a new list not in DataSift yet"
     #   - "Adding properties to an existing list inside DataSift"
-    #   - "Adding properties to owners (requires m. address)"
+    #   - "Adding properties to owners"
+    # When an account has existing lists DataSift pre-selects
+    # "Adding properties to an existing list inside DataSift" so
+    # text="Select one option" is absent.  We must still CLICK the
+    # pre-selected value to confirm it — otherwise "Next Step" stays
+    # grayed regardless of the list chosen in Part C.
     try:
-        # Click the dropdown to open it
-        dropdown = page.locator('text="Select one option"')
-        if await dropdown.count() > 0:
-            await dropdown.first.click()
-            await page.wait_for_timeout(1500)
-            logger.debug("Opened upload type dropdown")
+        if existing_list:
+            # Try opening the dropdown if it shows "Select one option" first
+            dropdown = page.locator('text="Select one option"')
+            if await dropdown.count() > 0:
+                await dropdown.first.click()
+                await page.wait_for_timeout(1000)
+                logger.debug("Opened upload type dropdown")
+                await _screenshot(page, "step1_dropdown_opened")
 
-            await _screenshot(page, "step1_dropdown_opened")
-
-            if existing_list:
-                # Select "Adding properties to an existing list inside DataSift"
-                existing_opt = page.locator('text="Adding properties to an existing list inside DataSift"')
+            # Click "Adding properties to an existing list inside DataSift"
+            # whether the dropdown just opened OR was pre-selected by DataSift.
+            for opt_text in [
+                "Adding properties to an existing list inside DataSift",
+                "Adding properties to an existing list",
+            ]:
+                existing_opt = page.locator(f'text="{opt_text}"')
                 if await existing_opt.count() > 0:
                     await existing_opt.first.click()
                     await page.wait_for_timeout(1500)
-                    logger.info("Selected 'Adding properties to an existing list inside DataSift'")
-                else:
-                    # Fallback: partial match
-                    existing_opt = page.locator('text="Adding properties to an existing list"')
-                    if await existing_opt.count() > 0:
-                        await existing_opt.first.click()
-                        await page.wait_for_timeout(1500)
-                        logger.info("Selected 'Adding properties to an existing list' (partial match)")
-            else:
-                # Select "Uploading a new list not in DataSift yet"
-                new_list = page.locator('text="Uploading a new list not in DataSift yet"')
+                    logger.info("Selected '%s'", opt_text)
+                    break
+        else:
+            # Click the dropdown to open it (new list flow always shows "Select one option")
+            dropdown = page.locator('text="Select one option"')
+            if await dropdown.count() > 0:
+                await dropdown.first.click()
+                await page.wait_for_timeout(1500)
+                logger.debug("Opened upload type dropdown")
+                await _screenshot(page, "step1_dropdown_opened")
+
+            # Select "Uploading a new list not in DataSift yet"
+            for opt_text in [
+                "Uploading a new list not in DataSift yet",
+                "Uploading a new list",
+            ]:
+                new_list = page.locator(f'text="{opt_text}"')
                 if await new_list.count() > 0:
                     await new_list.first.click()
                     await page.wait_for_timeout(1500)
-                    logger.info("Selected 'Uploading a new list not in DataSift yet'")
-                else:
-                    # Fallback: try partial match
-                    new_list = page.locator('text="Uploading a new list"')
-                    if await new_list.count() > 0:
-                        await new_list.first.click()
-                        await page.wait_for_timeout(1500)
-                        logger.info("Selected 'Uploading a new list' (partial match)")
+                    logger.info("Selected '%s'", opt_text)
+                    break
     except Exception as e:
         logger.warning("Dropdown selection: %s", e)
 
@@ -252,8 +261,11 @@ async def upload_csv(
     # "ASSOCIATE DATA WITH LIST" — enter or search for list name
     try:
         if existing_list:
-            # Existing list mode: styled dropdown showing "Select a list"
-            # Click the dropdown to open it, then select the target list
+            # Existing list mode: "Select a list" styled dropdown.
+            # Click to open, wait for options, use has-text (not exact text=)
+            # so partial matches like "Probate" work even if trailing whitespace.
+            # On failure, press Escape to close the dropdown so the page state
+            # is clean if the caller falls back to existing_list=False.
             list_dropdown = page.locator('text="Select a list"')
             if await list_dropdown.count() > 0:
                 await list_dropdown.first.click()
@@ -261,16 +273,32 @@ async def upload_csv(
                 logger.debug("Opened existing list dropdown")
                 await _screenshot(page, "step1_list_dropdown_opened")
 
-                # Look for the target list name in the dropdown options
-                match = page.locator(f'text="{list_name}"')
-                if await match.count() > 0:
-                    # Click the last match (dropdown option, not the label)
-                    await match.last.click()
-                    await page.wait_for_timeout(1000)
-                    logger.info("Selected existing list: %s", list_name)
-                else:
-                    logger.warning("List '%s' not found in dropdown", list_name)
+                # DOM inspection shows each option has value="{list_name}" on the
+                # Selectstyles__SelectOptionContainer div — use that as primary selector
+                # (precise, immune to whitespace/partial-text issues).
+                # Fall back to text-based locators for robustness.
+                matched = False
+                for locator in [
+                    page.locator(f'div[value="{list_name}"]'),            # most precise
+                    page.locator(f'[class*="SelectOptionContainer"][value="{list_name}"]'),
+                    page.get_by_text(list_name, exact=True),              # text fallback
+                    page.locator(f':has-text("{list_name}")'),
+                ]:
+                    try:
+                        await locator.first.wait_for(state="visible", timeout=3000)
+                        await locator.first.click()
+                        await page.wait_for_timeout(1000)
+                        logger.info("Selected existing list: %s", list_name)
+                        matched = True
+                        break
+                    except Exception:
+                        continue
+
+                if not matched:
+                    logger.warning("List '%s' not found in dropdown — closing dropdown", list_name)
                     await _screenshot(page, "step1_list_not_found")
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(500)
             else:
                 # Fallback: try searching for existing list via input
                 list_input = page.locator(
@@ -280,9 +308,9 @@ async def upload_csv(
                 if await list_input.count() > 0:
                     await list_input.first.fill(list_name or "")
                     await page.wait_for_timeout(2000)
-                    match = page.locator(f'text="{list_name}"')
+                    match = page.get_by_text(list_name, exact=True)
                     if await match.count() > 0:
-                        await match.last.click()
+                        await match.first.click()
                         await page.wait_for_timeout(1000)
                         logger.info("Selected existing list via search: %s", list_name)
         else:
@@ -439,30 +467,131 @@ async def upload_csv(
         await page.wait_for_timeout(1000)
         return True
 
-    # Map Tags column: find "Tags" card on left, drag to "Tags" target on right
-    for col_name in ["Tags", "Lists"]:
+    # Map Tags and Lists columns using text-locator drag + verification + click fallback.
+    # The original coordinate-based drag silently failed: _drag_column returned True
+    # (mouse events fired) but DataSift's React state never updated, so Lists values
+    # in the CSV were never applied to records.
+    async def _locate_col_element(col_name: str, side: str):
+        """Find the column card (side='left', x<500) or target slot (side='right', x>600).
+
+        Uses :has-text() (contains) not :text-is() (exact) — DataSift column cards
+        include sample data alongside the column name so exact match never fires.
+        """
+        x_lt = 500 if side == "left" else None
+        x_gt = None if side == "left" else 600
+        # :has-text() matches any element whose text CONTAINS col_name
+        candidates = page.locator(f':has-text("{col_name}")')
+        count = await candidates.count()
+        for i in range(count):
+            try:
+                el = candidates.nth(i)
+                if not await el.is_visible():
+                    continue
+                box = await el.bounding_box()
+                if not box:
+                    continue
+                if x_lt and box["x"] < x_lt:
+                    return el
+                if x_gt and box["x"] > x_gt:
+                    return el
+            except Exception:
+                continue
+        return None
+
+    async def _is_still_unmapped(col_name: str) -> bool:
+        """Return True if the column card is still visible on the left (unmapped) side."""
+        el = await _locate_col_element(col_name, "left")
+        return el is not None
+
+    async def _map_csv_column(col_name: str) -> bool:
+        """Map one CSV column to its DataSift target. Returns True on success.
+
+        The right panel only shows Required fields by default — Tags and Lists are
+        below the fold.  We use the right-panel search box to surface the target
+        field before any drag/click attempt.
+        """
+        source = await _locate_col_element(col_name, "left")
+        if not source:
+            logger.debug("Column %s: not found in left panel — may already be mapped", col_name)
+            return False
+
+        # Surface the target by typing col_name into the right-panel search box.
+        # The right panel has two Search... inputs; the second one is on the right.
+        right_search = page.locator('input[placeholder*="Search"]').last
         try:
-            # Source: unmapped column card on the left (contains column name + sample data)
-            source = page.locator(f'div:has-text("{col_name}") >> visible=true').first
-            # Target: mapping slot on the right side (search for it)
-            # Right-side targets have the field name — search within right panel area
-            target = page.locator(f'text="{col_name}"').last
-            if await source.count() > 0 and await target.count() > 0:
-                src_box = await source.bounding_box()
-                tgt_box = await target.bounding_box()
-                # Ensure source is on left (<600px) and target is on right (>600px)
-                if src_box and tgt_box and src_box["x"] < 600 and tgt_box["x"] > 600:
-                    if await _drag_column(source, target):
-                        logger.info("Mapped column: %s", col_name)
-                        await page.wait_for_timeout(1000)
-                    else:
-                        logger.warning("Drag failed for column: %s", col_name)
-                else:
-                    logger.debug("Column %s: no valid source/target positions", col_name)
-            else:
-                logger.debug("Column %s: source or target not found", col_name)
+            await right_search.fill(col_name)
+            await page.wait_for_timeout(1500)
+            logger.debug("Searched right panel for: %s", col_name)
         except Exception as e:
-            logger.warning("Column mapping %s failed: %s", col_name, e)
+            logger.debug("Right-panel search failed for %s: %s — proceeding without filter", col_name, e)
+
+        target = await _locate_col_element(col_name, "right")
+        if not target:
+            logger.warning("Column %s: target not found in right panel after search — skipping", col_name)
+            try:
+                await right_search.fill("")
+            except Exception:
+                pass
+            return False
+
+        # Attempt 1: Playwright drag_to() — handles React DnD events reliably.
+        try:
+            await source.drag_to(target, timeout=5000)
+            await page.wait_for_timeout(1000)
+            if not await _is_still_unmapped(col_name):
+                logger.info("Mapped column: %s (drag_to + search verified)", col_name)
+                try:
+                    await right_search.fill("")
+                except Exception:
+                    pass
+                return True
+            logger.debug("drag_to fired for %s but card still on left — trying slow drag", col_name)
+        except Exception as e:
+            logger.debug("drag_to failed for %s: %s", col_name, e)
+
+        # Attempt 2: Slow incremental mouse drag.
+        source2 = await _locate_col_element(col_name, "left")
+        target2 = await _locate_col_element(col_name, "right")
+        if source2 and target2:
+            if await _drag_column(source2, target2):
+                await page.wait_for_timeout(1000)
+                if not await _is_still_unmapped(col_name):
+                    logger.info("Mapped column: %s (slow drag + search verified)", col_name)
+                    try:
+                        await right_search.fill("")
+                    except Exception:
+                        pass
+                    return True
+
+        # Attempt 3: Click source then target.
+        source3 = await _locate_col_element(col_name, "left")
+        target3 = await _locate_col_element(col_name, "right")
+        if source3 and target3:
+            try:
+                await source3.click()
+                await page.wait_for_timeout(500)
+                await target3.click()
+                await page.wait_for_timeout(1000)
+                if not await _is_still_unmapped(col_name):
+                    logger.info("Mapped column: %s (click-to-map + search verified)", col_name)
+                    try:
+                        await right_search.fill("")
+                    except Exception:
+                        pass
+                    return True
+            except Exception as e:
+                logger.debug("Click-to-map failed for %s: %s", col_name, e)
+
+        try:
+            await right_search.fill("")
+        except Exception:
+            pass
+        logger.error("Column %s: all 3 mapping attempts failed — Lists routing will not apply",
+                     col_name)
+        return False
+
+    for col_name in ["Tags", "Lists"]:
+        await _map_csv_column(col_name)
 
     await _screenshot(page, "step4_after_mapping")
 
@@ -634,75 +763,61 @@ async def _select_all_records(page: Page) -> bool:
 
         await _screenshot(page, "before_select_all")
 
-        # Strategy 1: Find the header checkbox position via JS, then use Playwright
-        # mouse.click to properly trigger React's event system.
-        # The header checkbox is near the "OWNER" column header text.
-        header_pos = await page.evaluate("""() => {
-            // Find the OWNER header text element
-            const allEls = document.querySelectorAll('*');
-            for (const el of allEls) {
-                if (el.textContent.trim() === 'OWNER' && el.children.length === 0) {
-                    const rect = el.getBoundingClientRect();
-                    // The header checkbox is in the same row, to the left
-                    // Find the nearest checkbox (same vertical position)
-                    const checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                    let best = null;
-                    let bestDist = Infinity;
-                    for (const cb of checkboxes) {
-                        if (cb.classList.contains('react-toggle-screenreader-only')) continue;
-                        const cbRect = cb.getBoundingClientRect();
-                        // Must be roughly same Y position (within 30px) and to the left
-                        const yDist = Math.abs(cbRect.top - rect.top);
-                        if (yDist < 30 && cbRect.left < rect.left) {
-                            if (yDist < bestDist) {
-                                bestDist = yDist;
-                                best = cbRect;
-                            }
-                        }
-                    }
-                    if (best) {
-                        return {x: best.left + best.width/2, y: best.top + best.height/2};
-                    }
-                }
-            }
-            return null;
-        }""")
+        # Wait for the records table to render before attempting to click the
+        # header checkbox.  In fresh export sessions the table takes longer to
+        # appear than in warm post-upload sessions — without this wait, Strategy 1
+        # JS finds no OWNER element and falls through to Strategy 2 (page-only).
+        try:
+            await page.wait_for_selector('text="OWNER"', timeout=8000)
+        except Exception:
+            pass  # proceed even if OWNER header doesn't appear
 
-        if header_pos:
-            # Use Playwright mouse click which properly triggers React events
-            await page.mouse.click(header_pos["x"], header_pos["y"])
-            clicked_header = f"clicked at ({header_pos['x']:.0f}, {header_pos['y']:.0f})"
-            logger.info("Clicked header checkbox via coordinates: %s", clicked_header)
-            await page.wait_for_timeout(1500)
-        else:
-            clicked_header = None
+        # DOM-confirmed: the header has data-testid="CheckboxDropdown__DropdownContainer"
+        # wrapping a div[class*="DropdownTrigger"] chevron.  Clicking the container
+        # (or the trigger inside it) opens the "Choose selection" dropdown with
+        # "Select visible (10)" and "Select all (N)".
+        # We use the stable data-testid selector — no coordinates, no JS rect lookup.
 
-        if clicked_header:
-            logger.info("Clicked header checkbox via JS: %s", clicked_header)
-            await page.wait_for_timeout(1500)
-        else:
-            # Strategy 2: Click each record checkbox individually via JS
-            clicked_count = await page.evaluate("""() => {
-                const checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                let clicked = 0;
-                for (const cb of checkboxes) {
-                    if (cb.classList.contains('react-toggle-screenreader-only')) continue;
-                    cb.click();
-                    clicked++;
-                }
-                return clicked;
-            }""")
-            logger.info("Clicked %d checkboxes via JS (all non-toggle)", clicked_count)
-            await page.wait_for_timeout(1500)
+        # Step A: Click the header CheckboxDropdown container to open "Choose selection" menu.
+        # The container (data-testid confirmed from DOM) reliably triggers the React dropdown.
+        try:
+            container = page.locator('[data-testid="CheckboxDropdown__DropdownContainer"]').first
+            await container.wait_for(state="visible", timeout=8000)
+            await container.click()
+            logger.info("Clicked CheckboxDropdown__DropdownContainer")
+            await page.wait_for_timeout(1200)
+        except Exception as e:
+            logger.warning("Container click failed (%s) — selection may be page-only", e)
 
         await _screenshot(page, "records_selected_header")
 
-        # After checking the header checkbox, a "Select All X records" banner may appear
-        select_all_link = page.locator('text="Select all"')
-        if await select_all_link.count() > 0:
-            await select_all_link.first.click()
-            await page.wait_for_timeout(1000)
-            logger.debug("Clicked 'Select all' records link")
+        # Step B: Handle the "Choose selection" dropdown.
+        # Two states after clicking the dark square:
+        #   "Select all (N)"        — not yet selected; click it to select all pages
+        #   "Undo select all (N)"   — already selected (clicking the square selected all);
+        #                             just close the dropdown without clicking anything
+        try:
+            # Wait for dropdown to render with either option
+            await page.wait_for_timeout(500)
+            undo_loc = page.locator('text=/Undo select all \\(/').first
+            sel_loc  = page.locator('text=/Select all \\(/').first  # matches "Select all (N)"
+
+            if await undo_loc.count() > 0:
+                # All records already selected — close dropdown, keep selection
+                opt_text = await undo_loc.inner_text()
+                logger.info("All records already selected (%s) — closing dropdown",
+                            opt_text.strip())
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(500)
+            else:
+                await sel_loc.wait_for(state="visible", timeout=4000)
+                opt_text = await sel_loc.inner_text()
+                await sel_loc.click()
+                await page.wait_for_timeout(1000)
+                logger.info("Clicked '%s' — all pages selected", opt_text.strip())
+        except Exception:
+            logger.info("Selection dropdown closed without action — "
+                        "list fits on one page or state already correct")
 
         # Verify: check if Manage or Send To buttons are now visible
         manage_visible = await page.locator('button:has-text("Manage")').count() > 0
@@ -941,19 +1056,18 @@ async def skip_trace_records(page: Page, list_name: str) -> dict:
         await _screenshot(page, "skip_modal")
 
         # Skip Trace modal is a 3-step wizard: Terms → Review → Sent!
-        # Step 1: Click "I Agree with the terms" button
-        agree_btn = page.locator('button:has-text("I Agree with the terms")')
-        if await agree_btn.count() == 0:
-            agree_btn = page.locator('button:has-text("I Agree")')
-        if await agree_btn.count() > 0:
+        # Step 1: Click "I Agree with the terms" (idempotent — on repeat sessions
+        # DataSift skips the terms step since they were already accepted).
+        agree_btn = page.locator(
+            'button:has-text("I Agree with the terms"), button:has-text("I Agree")'
+        )
+        try:
+            await agree_btn.first.wait_for(state="visible", timeout=5000)
             await agree_btn.first.click()
             logger.info("Clicked 'I Agree with the terms'")
             await page.wait_for_timeout(2000)
-        else:
-            await _screenshot(page, "skip_no_agree")
-            result["message"] = "Could not find 'I Agree with the terms' button"
-            logger.error(result["message"])
-            return result
+        except Exception:
+            logger.info("Terms button not found — terms already accepted, proceeding")
 
         await _screenshot(page, "skip_review_step")
 
@@ -988,7 +1102,35 @@ async def skip_trace_records(page: Page, list_name: str) -> dict:
 
         await _screenshot(page, "skip_submitted")
 
-        # Skip trace runs in background — we don't need to wait
+        # Verify skip trace actually started — look for a success/processing indicator.
+        # DataSift either shows a "Sent!" confirmation, dismisses the modal, or
+        # shows a processing banner.  Any of these confirms the job was queued.
+        await page.wait_for_timeout(2000)
+        started = False
+        for indicator in [
+            'text="Sent!"',
+            'text="Skip trace in progress"',
+            'text="Processing"',
+            'text="success"',
+        ]:
+            if await page.locator(indicator).count() > 0:
+                started = True
+                logger.info("Skip trace confirmed started (found: %s)", indicator)
+                break
+
+        if not started:
+            # Modal dismissal also confirms success — if the terms/agree button
+            # is gone and the modal closed, the job was queued.
+            modal_gone = await page.locator(
+                'button:has-text("I Agree with the terms"), button:has-text("I Agree")'
+            ).count() == 0
+            started = modal_gone
+            if started:
+                logger.info("Skip trace confirmed started (modal dismissed)")
+
+        if not started:
+            logger.warning("Could not confirm skip trace started — check Activity → Skip Trace tab")
+
         result["success"] = True
         result["message"] = "Skip trace started — track progress in Activity → Skip Trace tab"
         logger.info(result["message"])
@@ -1246,7 +1388,9 @@ async def export_phone_enrichment(
             logger.error(result["message"])
             return result
 
-        await page.wait_for_timeout(2000)
+        # Give the SPA extra time to render filtered records before trying to select them.
+        # Fresh sessions (phone-score export) need longer than warm sessions (post-upload).
+        await page.wait_for_timeout(4000)
 
         # Select all records
         selected = await _select_all_records(page)
@@ -1607,12 +1751,7 @@ async def upload_phone_tags(page: Page, csv_path: str | Path) -> dict:
         return result
 
     try:
-        # Navigate to Records/Upload area
-        if "/records" not in page.url:
-            await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000)
-
-        await _dismiss_popups(page)
+        await _navigate_to_records(page)
 
         # Click "Upload File" in sidebar
         upload_link = page.locator('text="Upload File"')

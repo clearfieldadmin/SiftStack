@@ -418,7 +418,8 @@ def run_enrichment_pipeline(
                 from address_standardizer import standardize_addresses
 
                 standardize_addresses(
-                    notices, config.SMARTY_AUTH_ID, config.SMARTY_AUTH_TOKEN
+                    notices, config.SMARTY_AUTH_ID, config.SMARTY_AUTH_TOKEN,
+                    allowed_states={"TN"},   # Tennessee pipeline only accepts TN results
                 )
                 confirmed = sum(
                     1 for n in notices if n.dpv_match_code == "Y"

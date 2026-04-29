@@ -128,11 +128,39 @@ def _heir_count(notice: NoticeData) -> str:
         return ""
 
 
-# Entity suffixes that indicate a business, not a person.
-# DataSift marks records incomplete if owner name contains these without a real person.
+# Entity suffixes — expanded to cover LLC, LP, Trust, Realty, etc.
 _ENTITY_SUFFIXES = re.compile(
-    r"\b(?:LLC|L\.L\.C|Corp|Corporation|Inc|Incorporated|Trust|LP|LLP|"
-    r"LTD|Limited|Co\b|Company|Association|Partners|Partnership|Holdings)\b",
+    r"\b(?:LLC|L\.L\.C|Corp(?:oration)?|Inc(?:orporated)?|Trust|LP|LLP|LTD|Limited|"
+    r"Co\b|Company|Association|Partners|Partnership|Holdings|Realty|Properties|"
+    r"Group|Management|Enterprises|Investments|Development|Associates|Authority|"
+    r"Housing|Foundation|Ventures|Services)\b"
+    r"|Estate\s+of\b|Family\s+Trust\b|Revocable\s+Trust\b|Irrevocable\s+Trust\b",
+    re.IGNORECASE,
+)
+
+# Ordered rules for entity-type classification (first match wins)
+_ENTITY_TYPE_RULES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bLLC\b|\bL\.L\.C\b|\bLLP\b", re.IGNORECASE), "LLC"),
+    (re.compile(r"\bLP\b|\bL\.P\b", re.IGNORECASE), "LP"),
+    (re.compile(r"\bTrust\b|Family\s+Trust|Revocable\s+Trust|Irrevocable\s+Trust", re.IGNORECASE), "TRUST"),
+    (re.compile(r"Estate\s+of\b", re.IGNORECASE), "ESTATE"),
+    (re.compile(r"\bInc(?:orporated)?\b|\bCorp(?:oration)?\b", re.IGNORECASE), "CORP"),
+    (re.compile(r"\bPartners\b|\bPartnership\b", re.IGNORECASE), "PARTNERSHIP"),
+    (re.compile(
+        r"City\s+of\b|Housing\s+Authority|\bAuthority\b|Redevelopment|"
+        r"Commonwealth\s+of\b|Dep(?:artment|t)\.?\s+of\b|Bureau\s+of\b|Office\s+of\b|"
+        r"\bPHA\b|School\s+District|United\s+States|\bFederal\b|\bMunicipal\b|"
+        r"Pennsylvania\s+Housing",
+        re.IGNORECASE,
+    ), "GOVT"),
+]
+
+# Government entity patterns — used to tag non-marketable tax sale parcels
+_GOVT_PATTERNS = re.compile(
+    r"City\s+of\b|Housing\s+Authority|\bAuthority\b|Redevelopment|"
+    r"Commonwealth\s+of\b|Dep(?:artment|t)\.?\s+of\b|Bureau\s+of\b|Office\s+of\b|"
+    r"\bPHA\b|School\s+District|United\s+States|\bFederal\b|\bMunicipal\b|"
+    r"Pennsylvania\s+Housing",
     re.IGNORECASE,
 )
 
@@ -140,6 +168,18 @@ _ENTITY_SUFFIXES = re.compile(
 def _is_entity_name(name: str) -> bool:
     """Return True if name looks like a business entity, not a person."""
     return bool(_ENTITY_SUFFIXES.search(name))
+
+
+def _detect_entity_type(name: str) -> str:
+    """Return DataSift entity type string ('LLC', 'LP', 'TRUST', 'CORP',
+    'PARTNERSHIP', 'ESTATE', 'OTHER') for an entity name, or '' for individuals.
+    """
+    for pattern, etype in _ENTITY_TYPE_RULES:
+        if pattern.search(name):
+            return etype
+    if _is_entity_name(name):
+        return "OTHER"
+    return ""
 
 
 def _clean_and_split_name(full_name: str) -> tuple[str, str]:
@@ -185,7 +225,8 @@ def _clean_and_split_name(full_name: str) -> tuple[str, str]:
             name = first_person
 
     # Strip remaining special characters that cause incomplete status
-    name = re.sub(r"[&@#%]", "", name)
+    # Comma included so stray "LAST," tokens (from caller pre-splitting) are cleaned.
+    name = re.sub(r"[&@#%,]", "", name)
     # Collapse multiple spaces
     name = re.sub(r"\s+", " ", name).strip()
 
@@ -205,21 +246,62 @@ def _clean_and_split_name(full_name: str) -> tuple[str, str]:
     return (parts[0], " ".join(parts[1:]))
 
 
-def _split_name(full_name: str) -> tuple[str, str]:
-    """Split full name into (first, last). Alias for _clean_and_split_name."""
+def _split_name_opa(full_name: str) -> tuple[str, str]:
+    """Split an OPA-format name: 'LAST FIRST [MIDDLE]' → (first, last).
+
+    OPA owner_1 stores names as LAST FIRST MIDDLE (no comma).
+    Examples:
+      'Rogers Alvan M'  → first='Alvan M',  last='Rogers'
+      'Cooper Keith U'  → first='Keith U',  last='Cooper'
+      'Smith John'      → first='John',     last='Smith'
+    """
+    if not full_name:
+        return ("", "")
+    name = full_name.strip()
+    if _is_entity_name(name):
+        return ("", "")
+    parts = name.split()
+    if len(parts) == 1:
+        return ("", parts[0])        # bare last name only
+    last  = parts[0]
+    first = " ".join(parts[1:])
+    return (first, last)
+
+
+def _split_name(
+    full_name: str,
+    source_format: str = "notice_space",
+) -> tuple[str, str]:
+    """Split full name into (first, last) using the correct format for its source.
+
+    source_format:
+      'opa'          — OPA owner_1: 'LAST FIRST [MIDDLE]' (token 0 = last, rest = first)
+      'notice_comma' — notice field: 'LAST, FIRST' (caller must already strip the comma)
+      'notice_space' — notice field: 'FIRST LAST' (default; legacy behaviour)
+    """
+    if source_format == "opa":
+        return _split_name_opa(full_name)
     return _clean_and_split_name(full_name)
 
 
 # Map notice_type → DataSift list name for niche sequential marketing.
 # DataSift auto-creates lists from CSV if they don't exist yet.
 NOTICE_TYPE_TO_LIST = {
-    "foreclosure": "Foreclosure",
-    "probate": "Probate",
-    "tax_sale": "Tax Sale",
+    # TN (lowercase)
+    "foreclosure":    "Foreclosure",
+    "probate":        "Probate",
+    "tax_sale":       "Tax Sale",
     "tax_delinquent": "Tax Delinquent",
-    "eviction": "Eviction",
+    "eviction":       "Eviction",
     "code_violation": "Code Violation",
-    "divorce": "Divorce",
+    "divorce":        "Divorce",
+    # Philadelphia (uppercase)
+    "SHERIFF_MORTGAGE_FORECLOSURE": "Foreclosure",
+    "PROBATE_ESTATE":               "Probate",
+    "TAX_SALE":                     "Tax Sale",
+    "EVICTION":                     "Eviction",
+    "CODE_VIOLATION":               "Code Violation",
+    "LIS_PENDENS":                  "Pre-Foreclosure",
 }
 
 
@@ -335,58 +417,99 @@ def _build_tags(notice: NoticeData) -> str:
 
 
 def _get_contact_info(notice: NoticeData) -> dict:
-    """Determine the contact person and mailing address.
+    """Determine the contact person, mailing address, and entity classification.
 
-    For deceased owners with a decision maker: contact = DM
-    For living owners: contact = property owner
-    For entity-owned properties: try tax_owner_name or DM as real person fallback
+    Name-splitting rules (Bug 1 fix):
+      • OPA-sourced (tax_owner_name):  'LAST FIRST [MIDDLE]' → source_format='opa'
+      • Comma-joined owner_name:       'LAST, FIRST' → split on comma, swap
+      • Plain owner_name (non-OPA):    'FIRST LAST' → source_format='notice_space'
 
-    Mailing address always falls back to property address to avoid DataSift
-    marking records as incomplete.
+    Entity handling (Bug 2 fix):
+      Corporate entities (LLC, LP, Trust, …) get entity_type / entity_name in the
+      returned dict rather than first/last names.  Caller populates Entity Type and
+      Entity Contact CSV columns.
+
+    Returns dict keys: first, last, street, city, state, zip,
+                       entity_type, entity_name  (both '' for individuals)
     """
+    _empty_entity = {"entity_type": "", "entity_name": ""}
+
     if notice.owner_deceased == "yes" and notice.decision_maker_name:
-        first, last = _split_name(notice.decision_maker_name)
-        # Fall back to property address when DM has no mailing address
+        first, last = _split_name(notice.decision_maker_name, "notice_space")
         street = notice.decision_maker_street or notice.address
-        city = notice.decision_maker_city or notice.city
-        state = notice.decision_maker_state or notice.state
-        zip_code = notice.decision_maker_zip or notice.zip
-        return {
-            "first": first,
-            "last": last,
-            "street": street,
-            "city": city,
-            "state": state,
-            "zip": zip_code,
-        }
+        city   = notice.decision_maker_city   or notice.city
+        state  = notice.decision_maker_state  or notice.state
+        zip_c  = notice.decision_maker_zip    or notice.zip
+        return {"first": first, "last": last,
+                "street": street, "city": city, "state": state, "zip": zip_c,
+                **_empty_entity}
 
-    # Living owner — try owner_name first
-    first, last = _split_name(notice.owner_name)
+    # ── Resolve raw name and its format ───────────────────────────────────
+    raw_owner  = notice.owner_name or ""
+    name_src   = ""   # the canonical single-owner string
+    src_format = "notice_space"
+    first = last = ""   # guaranteed initialisation — branches below may override
 
-    # If owner_name was an entity (LLC/Trust), try fallbacks for a real person
+    if notice.tax_owner_name:
+        # OPA owner_1: LAST FIRST [MIDDLE] — always single owner, no comma
+        name_src   = notice.tax_owner_name
+        src_format = "opa"
+    elif "," in raw_owner:
+        # "LAST, FIRST [MIDDLE]" convention or comma-joined dual owners
+        # Take part before first comma (= last name in OPA/notice_comma format)
+        before, after = raw_owner.split(",", 1)
+        # Reconstruct as a clean single name: OPA part before comma is the last name
+        name_src   = before.strip()
+        src_format = "opa"    # pre-comma token is the last name in both conventions
+        # Re-prepend the after-comma part as first name if it looks like a person
+        if after.strip() and not _is_entity_name(after.strip()):
+            # Treat as "LAST, FIRST" — swap to produce (first=after, last=before)
+            first = after.strip().split()[0] if after.strip() else ""
+            last  = before.strip()
+            # Skip further splitting below
+            name_src = ""
+    else:
+        # No OPA match, no comma — non-OPA source: "FIRST LAST"
+        name_src   = raw_owner
+        src_format = "notice_space"
+
+    if name_src:
+        # Skip splitting for entity/government names — detection block below handles them
+        if _detect_entity_type(name_src):
+            first = last = ""
+        else:
+            first, last = _split_name(name_src, src_format)
+    # else first/last already set by the comma-split branch above
+
+    # ── Entity detection ─────────────────────────────────────────────────
+    entity_type = ""
+    entity_name = ""
+
     if not first and not last:
-        # Try entity research result (signing member, registered agent, etc.)
+        # Primary name resolved to an entity — populate entity fields
+        raw_entity = notice.tax_owner_name or raw_owner
+        entity_type = _detect_entity_type(raw_entity)
+        if entity_type:
+            entity_name = raw_entity
+
+        # Fallback chain: entity research → tax owner (individual) → DM → owner_name
         if notice.entity_person_name:
-            first, last = _split_name(notice.entity_person_name)
-        # Try tax API owner name (sometimes has individual behind entity)
-        if not first and not last:
-            if notice.tax_owner_name and not _is_entity_name(notice.tax_owner_name):
-                first, last = _split_name(notice.tax_owner_name)
-        # Try decision maker (probate PR, etc.)
+            first, last = _split_name(notice.entity_person_name, "notice_space")
+        if not first and not last and notice.tax_owner_name and not _is_entity_name(notice.tax_owner_name):
+            first, last = _split_name(notice.tax_owner_name, "opa")
         if not first and not last and notice.decision_maker_name:
-            first, last = _split_name(notice.decision_maker_name)
+            first, last = _split_name(notice.decision_maker_name, "notice_space")
+        # If still blank but entity_name is set, leave first/last blank —
+        # DataSift will use Entity Contact column instead.
 
     street = notice.owner_street or notice.address
-    city = notice.owner_city or notice.city
-    state = notice.owner_state or notice.state
-    zip_code = notice.owner_zip or notice.zip
+    city   = notice.owner_city   or notice.city
+    state  = notice.owner_state  or notice.state
+    zip_c  = notice.owner_zip    or notice.zip
     return {
-        "first": first,
-        "last": last,
-        "street": street,
-        "city": city,
-        "state": state,
-        "zip": zip_code,
+        "first": first, "last": last,
+        "street": street, "city": city, "state": state, "zip": zip_c,
+        "entity_type": entity_type, "entity_name": entity_name,
     }
 
 
@@ -688,23 +811,38 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
     tax_auction = ""
     foreclosure_date = ""
     probate_open = ""
-    if notice.notice_type == "tax_sale":
+    if notice.notice_type in ("TAX_SALE", "tax_sale"):
         tax_auction = _format_date(notice.auction_date)
-    elif notice.notice_type == "foreclosure":
+    elif notice.notice_type in ("SHERIFF_MORTGAGE_FORECLOSURE", "foreclosure"):
         foreclosure_date = _format_date(notice.auction_date)
-    elif notice.notice_type == "probate":
+    elif notice.notice_type in ("PROBATE_ESTATE", "probate"):
         probate_open = _format_date(notice.date_added)
 
     # Personal Representative only for probate notices
     personal_rep = ""
-    if notice.notice_type == "probate" and notice.decision_maker_name:
+    if notice.notice_type in ("PROBATE_ESTATE", "probate") and notice.decision_maker_name:
         personal_rep = notice.decision_maker_name
+
+    # ── Bug 2: Entity type/contact from contact resolution ─────────────
+    # _get_contact_info returns entity_type and entity_name when the owner
+    # is a corporate entity.  These override the notice.entity_* fields so
+    # eviction landlords (LLCs, LPs) populate Entity Type/Contact correctly.
+    entity_type = contact.get("entity_type") or notice.entity_type or ""
+    entity_contact = contact.get("entity_name") or notice.entity_person_name or ""
+
+    # ── Bug 4: Government-owned tax sale flagging ──────────────────────
+    # Government parcels are non-marketable; keep in CSV but flag them.
+    govt_tags = ""
+    if notice.notice_type in ("TAX_SALE", "tax_sale"):
+        owner_check = notice.tax_owner_name or notice.owner_name or ""
+        if _GOVT_PATTERNS.search(owner_check):
+            govt_tags = ",government_owned,excluded_from_marketing"
 
     return {
         # ── Core auto-mapped ──
         "Property Street Address": notice.address,
         "Property City": notice.city,
-        "Property State": notice.state or "TN",
+        "Property State": notice.state or "PA",
         "Property ZIP Code": notice.zip,
         "Owner First Name": contact["first"],
         "Owner Last Name": contact["last"],
@@ -727,7 +865,7 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
         "Email 3": notice.email_3,
         "Email 4": notice.email_4,
         "Email 5": notice.email_5,
-        "Tags": tags,
+        "Tags": tags + govt_tags,
         "Lists": list_name,
         "Notes": notes,
         # ── Built-in fields ──
@@ -776,9 +914,9 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
         "Signing Chain Names": notice.signing_chain_names,
         "DM Confidence Reason": notice.dm_confidence_reason,
         "Data Flags": notice.missing_data_flags,
-        # ── Entity research fields ──
-        "Entity Type": notice.entity_type,
-        "Entity Contact": notice.entity_person_name,
+        # ── Entity research fields (Bug 2) ──
+        "Entity Type": entity_type,
+        "Entity Contact": entity_contact,
         "Entity Contact Role": notice.entity_person_role,
     }
 
@@ -803,6 +941,7 @@ def write_datasift_csv(
     output_path = OUTPUT_DIR / filename
     written = 0
     incomplete = 0
+    probate_dropped = 0
     issue_counts: dict[str, int] = {}
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -810,6 +949,19 @@ def write_datasift_csv(
         writer.writeheader()
 
         for notice in notices:
+            # ── Bug 3: Drop probate records with no property address ─────────
+            # A probate record with no OPA match AND no property address has no
+            # Philadelphia property to market against — drop it entirely.
+            # Only applied to inquirer_probate; all other sources keep their records.
+            if notice.notice_type == "PROBATE_ESTATE":
+                try:
+                    meta = json.loads(notice.heir_map_json) if notice.heir_map_json else {}
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                if not meta.get("opa_match") and not notice.address:
+                    probate_dropped += 1
+                    continue
+
             row = _build_row(notice)
             is_complete, issues = _validate_row(row)
             if not is_complete:
@@ -820,6 +972,8 @@ def write_datasift_csv(
             writer.writerow(row)
             written += 1
 
+    if probate_dropped:
+        logger.info("Probate drop (no address + no OPA match): %d records dropped", probate_dropped)
     logger.info("Wrote %d records to DataSift CSV: %s", written, output_path)
     if incomplete:
         logger.warning("DataSift completeness: %d/%d clean, %d incomplete (%s)",

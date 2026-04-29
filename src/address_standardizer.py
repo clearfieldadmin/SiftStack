@@ -49,6 +49,7 @@ def standardize_addresses(
     notices: list[NoticeData],
     auth_id: str,
     auth_token: str,
+    allowed_states: set[str] | None = None,
 ) -> list[NoticeData]:
     """Standardize addresses in-place via Smarty US Street API.
 
@@ -125,8 +126,16 @@ def standardize_addresses(
             metadata = candidate.metadata
             analysis = candidate.analysis
 
-            # Safety: reject non-TN results (bad match on out-of-state address)
-            if components and components.state_abbreviation and components.state_abbreviation != "TN":
+            # Safety: reject results from the wrong state (guards against
+            # Smarty matching a street name in a different state).
+            # allowed_states=None accepts any state (used for Philadelphia PA).
+            # allowed_states={"TN"} preserves the original Tennessee-only behaviour.
+            if (
+                allowed_states is not None
+                and components
+                and components.state_abbreviation
+                and components.state_abbreviation not in allowed_states
+            ):
                 logger.warning(
                     "Smarty returned %s for '%s' -- keeping original",
                     components.state_abbreviation,

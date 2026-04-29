@@ -1,0 +1,157 @@
+name: Philadelphia Daily Pipeline
+
+# Schedules (UTC — Philadelphia is ET = UTC-4 in summer, UTC-5 in winter)
+# 12:00 UTC = 08:00 ET (summer DST).  Adjust to 13:00 UTC in November for EST.
+#
+# Two crons in one workflow = two independent workflow runs per firing:
+#   Every day 12:00 UTC  → "daily" job fires  (L&I, probate, evictions)
+#   Mon + Thu 12:00 UTC  → "bid4assets" job fires (mortgage + tax foreclosure)
+#   On Mon/Thu BOTH jobs fire in parallel — each uploads to "SiftStack {date}"
+
+on:
+  schedule:
+    - cron: '0 12 * * *'      # 08:00 ET daily   — L&I, probate, evictions
+    - cron: '0 12 * * 1,4'    # 08:00 ET Mon+Thu  — Bid4Assets
+
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which job to run: daily | bid4assets | all'
+        required: false
+        default: 'all'
+      lookback:
+        description: 'Lookback window in days'
+        required: false
+        default: '1'
+      phone_scoring:
+        description: 'Run Trestle phone scoring (true/false)'
+        required: false
+        default: 'true'
+
+# ─────────────────────────────────────────────────────────────────
+# Shared env block referenced by both jobs
+# ─────────────────────────────────────────────────────────────────
+env:
+  ANTHROPIC_API_KEY:      ${{ secrets.ANTHROPIC_API_KEY }}
+  CAPSOLVER_API_KEY:      ${{ secrets.CAPSOLVER_API_KEY }}
+  CAPTCHA_API_KEY:        ${{ secrets.CAPTCHA_API_KEY }}
+  DATASIFT_EMAIL:         ${{ secrets.DATASIFT_EMAIL }}
+  DATASIFT_PASSWORD:      ${{ secrets.DATASIFT_PASSWORD }}
+  DROPBOX_APP_KEY:        ${{ secrets.DROPBOX_APP_KEY }}
+  DROPBOX_APP_SECRET:     ${{ secrets.DROPBOX_APP_SECRET }}
+  DROPBOX_POLL_INTERVAL:  ${{ secrets.DROPBOX_POLL_INTERVAL }}
+  DROPBOX_REFRESH_TOKEN:  ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+  DROPBOX_ROOT_FOLDER:    ${{ secrets.DROPBOX_ROOT_FOLDER }}
+  FIRECRAWL_API_KEY:      ${{ secrets.FIRECRAWL_API_KEY }}
+  LLM_BACKEND:            ${{ secrets.LLM_BACKEND }}
+  OPENWEBNINJA_API_KEY:   ${{ secrets.OPENWEBNINJA_API_KEY }}
+  PHILLY_PROXY_URL:       ${{ secrets.PHILLY_PROXY_URL }}
+  SCRAPFLY_API_KEY:       ${{ secrets.SCRAPFLY_API_KEY }}
+  SERPER_API_KEY:         ${{ secrets.SERPER_API_KEY }}
+  SLACK_WEBHOOK_URL:      ${{ secrets.SLACK_WEBHOOK_URL }}
+  SMARTY_AUTH_ID:         ${{ secrets.SMARTY_AUTH_ID }}
+  SMARTY_AUTH_TOKEN:      ${{ secrets.SMARTY_AUTH_TOKEN }}
+  TNPN_EMAIL:             ${{ secrets.TNPN_EMAIL }}
+  TNPN_PASSWORD:          ${{ secrets.TNPN_PASSWORD }}
+  TRACERFY_API_KEY:       ${{ secrets.TRACERFY_API_KEY }}
+  TRESTLE_API_KEY:        ${{ secrets.TRESTLE_API_KEY }}
+
+jobs:
+  # ───────────────────────────────────────────────────────────────
+  # Job 1: Daily sources — L&I violations, probate, evictions
+  # Fires every day on schedule; on workflow_dispatch when job=daily|all
+  # ───────────────────────────────────────────────────────────────
+  daily:
+    name: Daily — L&I / Probate / Evictions
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.job == 'daily' || inputs.job == 'all')) ||
+      github.event.schedule == '0 12 * * *'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright + system deps
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run daily pipeline
+        run: |
+          PHONE_FLAG=""
+          if [ "${{ inputs.phone_scoring }}" = "false" ]; then
+            PHONE_FLAG="--no-phone-scoring"
+          fi
+          python run_philly_daily.py \
+            --lookback ${{ inputs.lookback || '1' }} \
+            --sources li_violations inquirer_probate fjd_evictions \
+            $PHONE_FLAG
+
+      - name: Notify Slack on GHA failure
+        if: failure()
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"*SiftStack GHA FAILED* — daily job (L\\u0026I / Probate / Evictions)\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>\"
+            }"
+
+  # ───────────────────────────────────────────────────────────────
+  # Job 2: Bid4Assets — mortgage + tax foreclosure (Mon + Thu only)
+  # Fires Mon/Thu on schedule; on workflow_dispatch when job=bid4assets|all
+  # Phone scoring OFF — daily job already scored today's list
+  # ───────────────────────────────────────────────────────────────
+  bid4assets:
+    name: Bid4Assets — Mortgage / Tax (Mon + Thu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.job == 'bid4assets' || inputs.job == 'all')) ||
+      github.event.schedule == '0 12 * * 1,4'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright + system deps
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run Bid4Assets pipeline
+        run: |
+          python run_philly_daily.py \
+            --lookback ${{ inputs.lookback || '1' }} \
+            --sources bid4assets_mortgage bid4assets_tax \
+            --no-phone-scoring
+
+      - name: Notify Slack on GHA failure
+        if: failure()
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"*SiftStack GHA FAILED* — bid4assets job (Mortgage / Tax Foreclosure)\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>\"
+            }"
