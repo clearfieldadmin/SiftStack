@@ -27,7 +27,8 @@ DROPBOX_STATE_FILE = PROJECT_ROOT / "dropbox_state.json"
 PHOTO_STATE_FILE = PROJECT_ROOT / "photo_state.json"
 
 # ── Dropbox Watcher ────────────────────────────────────────────────────
-DROPBOX_POLL_INTERVAL = int(os.getenv("DROPBOX_POLL_INTERVAL", "900"))  # seconds (default 15 min)
+_v = os.getenv("DROPBOX_POLL_INTERVAL", "").strip()
+DROPBOX_POLL_INTERVAL = int(_v) if _v else 900  # seconds (default 15 min)
 DROPBOX_ROOT_FOLDER = os.getenv("DROPBOX_ROOT_FOLDER", "")  # root folder path in Dropbox, e.g. "/TN Public Notice"
 DROPBOX_STORAGE_WARN_PERCENT = 80  # warn when storage usage exceeds this %
 
@@ -99,7 +100,8 @@ MAX_RETRIES = 3
 RESULTS_PER_PAGE = 50  # max the site allows
 
 # ── Image Processing ───────────────────────────────────────────────────
-BLUR_THRESHOLD = int(os.getenv("BLUR_THRESHOLD", "100"))   # Laplacian variance; below = rejected as blurry
+_v = os.getenv("BLUR_THRESHOLD", "").strip()
+BLUR_THRESHOLD = int(_v) if _v else 100   # Laplacian variance; below = rejected as blurry
 TESSERACT_PSM_PDF = 3    # fully automatic — best for PDF tax sale tables
 TESSERACT_PSM_PHOTO = 4  # assume single column of variable-size text — best for terminal screen photos
 
