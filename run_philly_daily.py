@@ -96,6 +96,15 @@ async def main(
     print(f"  RDI removed       : {st['rdi_removed']}")
     print(f"  Validation removed: {st['validation_removed']}")
     print(f"  CSV written       : {st['csv_written']}  (probate dropped: {st['probate_dropped']})")
+    print(f"  Tier-0 dropped    : {st.get('tier0_dropped', 0)}")
+    tier_dist = st.get("tier_distribution", {})
+    if tier_dist:
+        tier_labels = {1: "Cold", 2: "Warm", 3: "Hot", 4: "Critical"}
+        tier_str = "  ".join(
+            f"T{t}({tier_labels.get(t,'?')})={c}"
+            for t, c in sorted(tier_dist.items())
+        )
+        print(f"  Distress tiers    : {tier_str}")
     print(f"  CSV path          : {result['csv_path']}")
 
     if upload:

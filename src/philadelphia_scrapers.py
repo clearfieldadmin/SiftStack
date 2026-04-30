@@ -449,6 +449,274 @@ def _title(s: str) -> str:
     return s.title() if s.isupper() or s.islower() else s
 
 
+# ── SOURCE: OPA Tax Delinquencies ─────────────────────────────────────
+
+_SOURCE_TAX_DELINQUENT = next(
+    (s for s in PHILLY_SOURCES if s.source_id == "opa_tax_delinquent"), None
+)
+
+
+async def scrape_opa_tax_delinquent(lookback_days: int = 7) -> list[NoticeData]:
+    """Fetch real estate tax delinquencies from OpenDataPhilly Carto.
+
+    Filters: num_years_owed >= 2 AND total_due >= 5000.
+    No lookback filter — this is a static delinquency snapshot updated periodically.
+    lookback_days param accepted for API compatibility but unused.
+    """
+    if _SOURCE_TAX_DELINQUENT is None:
+        logger.error("[opa_tax_delinquent] Source not found in PHILLY_SOURCES")
+        return []
+
+    query = (
+        "SELECT opa_number, owner, total_due, principal_due, oldest_year_owed, "
+        "num_years_owed, street_address, zip_code, mailing_address, mailing_city, "
+        "mailing_state, mailing_zip "
+        "FROM real_estate_tax_delinquencies "
+        "WHERE num_years_owed >= 2 AND total_due >= 5000 "
+        "LIMIT 5000"
+    )
+    params = {"q": query, "format": "json"}
+
+    logger.info(
+        "[opa_tax_delinquent] Querying Carto API (>=2 years, >=$5K balance)"
+    )
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.get(PHILLY_CARTO_API_URL, params=params)
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+
+    rows: list[dict] = data.get("rows", [])
+    today = _today()
+    notices: list[NoticeData] = []
+
+    for row in rows:
+        zip_raw = str(row.get("zip_code") or "")[:5]
+        n = _philly_notice(
+            _SOURCE_TAX_DELINQUENT,
+            date_added=today,
+            address=_title(str(row.get("street_address") or "")),
+            zip=zip_raw,
+            owner_name=_title(str(row.get("owner") or "")),
+            parcel_id=str(row.get("opa_number") or ""),
+            tax_delinquent_amount=str(row.get("total_due") or ""),
+            tax_delinquent_years=str(row.get("num_years_owed") or ""),
+            owner_street=_title(str(row.get("mailing_address") or "")),
+            owner_city=_title(str(row.get("mailing_city") or "")),
+            owner_state=str(row.get("mailing_state") or ""),
+            owner_zip=str(row.get("mailing_zip") or "")[:5],
+        )
+        notices.append(n)
+
+    logger.info(
+        "[opa_tax_delinquent] %d records (>=2 years, >=$5K balance)", len(notices)
+    )
+    return notices
+
+
+async def _enrich_tax_delinquency(notices: list[NoticeData]) -> int:
+    """Overlay tax delinquency data from Carto onto notices that have a parcel_id.
+
+    Only runs on records where parcel_id is set and tax_delinquent_amount is empty.
+    Returns count of records enriched.
+    """
+    candidates = [
+        n for n in notices
+        if (n.parcel_id or "").strip() and not (n.tax_delinquent_amount or "").strip()
+    ]
+    if not candidates:
+        return 0
+
+    ids = list({n.parcel_id.strip() for n in candidates})
+    enriched = 0
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for batch in _chunks(ids, 200):
+            ids_str = ",".join(b.replace("'", "''") for b in batch)
+            query = (
+                f"SELECT opa_number, total_due, num_years_owed "
+                f"FROM real_estate_tax_delinquencies "
+                f"WHERE opa_number IN ({ids_str})"
+            )
+            try:
+                resp = await client.get(
+                    PHILLY_CARTO_API_URL, params={"q": query, "format": "json"}
+                )
+                resp.raise_for_status()
+                rows = resp.json().get("rows", [])
+                delinq_map = {str(r["opa_number"]): r for r in rows if r.get("opa_number")}
+
+                for n in candidates:
+                    pid = n.parcel_id.strip()
+                    if pid in delinq_map:
+                        row = delinq_map[pid]
+                        n.tax_delinquent_amount = str(row.get("total_due") or "")
+                        n.tax_delinquent_years = str(row.get("num_years_owed") or "")
+                        enriched += 1
+            except Exception:
+                logger.warning(
+                    "[_enrich_tax_delinquency] Batch error for %d ids", len(batch),
+                    exc_info=True,
+                )
+
+    if enriched:
+        logger.info("[_enrich_tax_delinquency] Enriched %d records with tax delinquency data", enriched)
+    return enriched
+
+
+# ── SOURCE: L&I Imminently Dangerous ─────────────────────────────────
+
+_SOURCE_IMMINENTLY_DANGEROUS = next(
+    (s for s in PHILLY_SOURCES if s.source_id == "li_imminently_dangerous"), None
+)
+
+
+async def scrape_li_imminently_dangerous(lookback_days: int = 7) -> list[NoticeData]:
+    """Fetch Imminently Dangerous structures from L&I violations Carto table.
+
+    Filters by prioritydesc = 'IMMINENTLY DANGEROUS'. No lookback filter —
+    uses full dataset since new cases appear continuously.
+    lookback_days param accepted for API compatibility but unused here.
+    Also runs OPA enrichment to populate parcel_id, property_type, year_built.
+    """
+    if _SOURCE_IMMINENTLY_DANGEROUS is None:
+        logger.error("[li_imminently_dangerous] Source not found in PHILLY_SOURCES")
+        return []
+
+    # li_violations table columns (confirmed from live schema 2026-04-30):
+    # caseaddeddate (not casecreateddate), ownername (not opa_owner),
+    # violationdescription (direct), status (not violationstatus), casestatus
+    query = (
+        "SELECT v.address, v.zip, v.caseaddeddate, "
+        "v.violationdescription, "
+        "v.status, v.casestatus, "
+        "v.ownername, "
+        "v.opa_account_num AS parcelid_num, "
+        "v.geocode_x, v.geocode_y, "
+        "o.mailing_street AS owneraddress, "
+        "o.mailing_city_state AS ownercitystate, "
+        "o.mailing_zip AS ownerzip "
+        "FROM li_violations v "
+        "LEFT JOIN opa_properties_public o "
+        "  ON v.opa_account_num = o.parcel_number "
+        "WHERE v.prioritydesc = 'IMMINENTLY DANGEROUS'"
+    )
+    params = {"q": query, "format": "json"}
+
+    logger.info("[li_imminently_dangerous] Querying Carto API (prioritydesc=IMMINENTLY DANGEROUS)")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.get(PHILLY_CARTO_API_URL, params=params)
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+
+    rows: list[dict] = data.get("rows", [])
+    logger.info("[li_imminently_dangerous] %d rows returned", len(rows))
+
+    notices: list[NoticeData] = []
+    for row in rows:
+        # li_violations uses caseaddeddate (confirmed from live schema 2026-04-30)
+        raw_date = (row.get("caseaddeddate") or "")[:10]
+
+        prop_addr = _normalize_addr(row.get("address") or "")
+        mail_addr = _normalize_addr(row.get("owneraddress") or "")
+        if not mail_addr:
+            owner_status = "UNKNOWN"
+        elif prop_addr and mail_addr == prop_addr:
+            owner_status = "OWNER_OCCUPIED"
+        else:
+            owner_status = "ABSENTEE"
+
+        city_state = row.get("ownercitystate") or ""
+        cs_parts = city_state.rsplit(" ", 1)
+        owner_city = _title(cs_parts[0]) if cs_parts else ""
+        owner_state = cs_parts[1].upper() if len(cs_parts) > 1 else ""
+
+        n = _philly_notice(
+            _SOURCE_IMMINENTLY_DANGEROUS,
+            date_added=raw_date or _today(),
+            address=_title(row.get("address") or ""),
+            zip=(row.get("zip") or "")[:5],
+            owner_name=_title(row.get("ownername") or ""),
+            owner_street=_title(row.get("owneraddress") or ""),
+            owner_city=owner_city,
+            owner_state=owner_state,
+            owner_zip=(row.get("ownerzip") or "")[:5],
+            parcel_id=str(row.get("parcelid_num") or ""),
+            latitude=str(row.get("geocode_y") or ""),
+            longitude=str(row.get("geocode_x") or ""),
+            raw_text=(
+                f"IMMINENTLY DANGEROUS: {row.get('violationdescription', '')} "
+                f"Status: {row.get('status', '')} "
+                f"Case status: {row.get('casestatus', '')} "
+                f"Case added: {raw_date}"
+            ),
+            source_url=f"https://atlas.phila.gov/#{_normalize_addr(row.get('address', ''))}",
+        )
+        _set_meta(n, owner_status=owner_status, imminently_dangerous=True)
+        notices.append(n)
+
+    logger.info("[li_imminently_dangerous] Built %d notices", len(notices))
+
+    # OPA enrichment — same as li_violations
+    if notices:
+        kept, dropped = await enrich_and_filter(notices, id_field="parcel_id")
+        logger.info(
+            "[li_imminently_dangerous] After OPA filter: %d kept, %d dropped (vacant/land)",
+            len(kept), dropped,
+        )
+        return kept
+
+    return notices
+
+
+async def _enrich_expired_permits(notices: list[NoticeData]) -> int:
+    """Overlay expired permit flag onto notices that have a parcel_id.
+
+    Queries permits Carto table for EXPIRED status by opa_account_num.
+    Sets notice.expired_permit = 'yes' for matches.
+    Returns count of records enriched.
+    """
+    candidates = [
+        n for n in notices
+        if (n.parcel_id or "").strip() and not (n.expired_permit or "").strip()
+    ]
+    if not candidates:
+        return 0
+
+    ids = list({n.parcel_id.strip() for n in candidates})
+    enriched = 0
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for batch in _chunks(ids, 200):
+            ids_str = "','".join(b.replace("'", "''") for b in batch)
+            query = (
+                f"SELECT DISTINCT opa_account_num "
+                f"FROM permits "
+                f"WHERE status ILIKE 'EXPIRED%' "
+                f"AND opa_account_num IN ('{ids_str}')"
+            )
+            try:
+                resp = await client.get(
+                    PHILLY_CARTO_API_URL, params={"q": query, "format": "json"}
+                )
+                resp.raise_for_status()
+                rows = resp.json().get("rows", [])
+                expired_set = {str(r["opa_account_num"]) for r in rows if r.get("opa_account_num")}
+
+                for n in candidates:
+                    if n.parcel_id.strip() in expired_set:
+                        n.expired_permit = "yes"
+                        enriched += 1
+            except Exception:
+                logger.warning(
+                    "[_enrich_expired_permits] Batch error for %d ids", len(batch),
+                    exc_info=True,
+                )
+
+    if enriched:
+        logger.info("[_enrich_expired_permits] Flagged %d records with expired permits", enriched)
+    return enriched
+
+
 # ── Bid4Assets shared helpers (Sources 2 & 3) ─────────────────────────
 
 # CSS selectors for the Bid4Assets auction listing pages.
@@ -2234,9 +2502,20 @@ async def run_philly_scrape(
 
     raw: dict[str, list[NoticeData]] = {}
 
-    # SOURCE 1 — pure httpx, no Playwright
-    if any(s.source_id == "li_violations" for s in enabled):
-        raw["li_violations"] = await scrape_li_violations(lookback_days)
+    # httpx sources — pure async HTTP, no Playwright
+    _httpx_sources = {
+        "li_violations":        scrape_li_violations,
+        "opa_tax_delinquent":   scrape_opa_tax_delinquent,
+        "li_imminently_dangerous": scrape_li_imminently_dangerous,
+    }
+    for sid, fn in _httpx_sources.items():
+        if any(s.source_id == sid for s in enabled):
+            logger.info("Running source: %s (httpx)", sid)
+            try:
+                raw[sid] = await fn(lookback_days)
+            except Exception:
+                logger.exception("Unhandled error in source %s", sid)
+                raw[sid] = []
 
     # SOURCES 2, 3, 4 — Scrapfly (no Playwright needed)
     _scrapfly_sources = {
@@ -2261,11 +2540,13 @@ async def run_philly_scrape(
             raw["fjd_lis_pendens"] = []
 
     # SOURCES 5, 6 — Playwright (fjd_evictions, inquirer_probate)
+    # Exclude sources already handled above (httpx + Scrapfly)
+    _non_playwright_sids = set(_httpx_sources.keys()) | {
+        "bid4assets_mortgage", "bid4assets_tax", "fjd_lis_pendens"
+    }
     playwright_sources = [
         s for s in enabled
-        if s.source_id not in (
-            "li_violations", "bid4assets_mortgage", "bid4assets_tax", "fjd_lis_pendens"
-        )
+        if s.source_id not in _non_playwright_sids
     ]
     if playwright_sources:
         _UA = (
@@ -2303,10 +2584,21 @@ async def run_philly_scrape(
     results: dict[str, list[NoticeData]] = {}
     filter2_dropped: dict[str, int] = {}
 
+    # Sources that already ran OPA enrichment + filter internally — skip double-enrich.
+    # li_imminently_dangerous calls enrich_and_filter internally.
+    # opa_tax_delinquent IS the OPA dataset — no cross-reference needed.
+    _opa_already_done = {"li_imminently_dangerous", "opa_tax_delinquent"}
+
     for sid, notices in raw.items():
         if not notices:
             results[sid] = []
             filter2_dropped[sid] = 0
+            continue
+
+        if sid in _opa_already_done:
+            results[sid] = notices
+            filter2_dropped[sid] = 0
+            logger.info("[%s] Filter 2: skipped (OPA handled internally)", sid)
             continue
 
         before = len(notices)

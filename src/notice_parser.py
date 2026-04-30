@@ -130,6 +130,11 @@ class NoticeData:
     email_3: str = ""
     email_4: str = ""
     email_5: str = ""
+    # Expired permit overlay (populated by _enrich_expired_permits)
+    expired_permit: str = ""           # "yes" or "" — has an expired L&I permit
+    # Compound distress — populated during merge dedup
+    all_notice_types: str = ""         # semicolon-separated list of all source notice_types for this parcel
+    signal_sources: str = ""           # semicolon-separated list of source_ids that flagged this parcel
     # Pipeline metadata (set by enrichment_pipeline)
     run_id: str = ""                   # Unique pipeline run identifier for data lineage
 

@@ -134,45 +134,149 @@ def _opa_meta(notice: NoticeData) -> dict:
 def _is_dp_candidate(notice: NoticeData) -> bool:
     """True if this notice requires Tracerfly / Trestle deep-prospecting treatment.
 
-    For Philadelphia, only PROBATE_ESTATE records are DP candidates — the decedent
-    is deceased by definition and the heir chain is the signing chain.  All other
-    sources (li_violations, bid4assets_*, fjd_evictions) use DataSift's bundled
-    unlimited skip trace instead.
+    Expanded from PROBATE_ESTATE-only to include any notice with a confirmed
+    deceased owner (obituary-matched) or heir map populated by obituary enrichment.
     """
-    return notice.notice_type == "PROBATE_ESTATE"
+    return (
+        notice.notice_type == "PROBATE_ESTATE"
+        or notice.owner_deceased == "yes"
+        or bool(notice.heir_map_json)
+        or bool(notice.decision_maker_name)
+    )
+
+
+def compute_distress_tier(notice: NoticeData) -> tuple[int, list[str]]:
+    """Returns (tier 0-4, contributing_signals).
+    Each unique signal contributes 1 point, capped at 4.
+    """
+    signals: list[str] = []
+    all_types = set((notice.all_notice_types or notice.notice_type or "").split(";"))
+
+    if notice.notice_type == "CODE_VIOLATION" or "CODE_VIOLATION" in all_types:
+        signals.append("code_violation")
+
+    if notice.tax_delinquent_amount:
+        try:
+            if float(notice.tax_delinquent_amount) > 0:
+                signals.append("tax_delinquent")
+        except (ValueError, TypeError):
+            pass
+    if "TAX_DELINQUENT" in all_types and "tax_delinquent" not in signals:
+        signals.append("tax_delinquent")
+
+    if (notice.vacant or "").upper() == "Y":
+        signals.append("vacant")
+
+    if notice.notice_type == "IMMINENTLY_DANGEROUS" or "IMMINENTLY_DANGEROUS" in all_types:
+        signals.append("imminently_dangerous")
+
+    if notice.notice_type in ("SHERIFF_MORTGAGE_FORECLOSURE", "TAX_SALE") or \
+       any(t in all_types for t in ("SHERIFF_MORTGAGE_FORECLOSURE", "TAX_SALE")):
+        signals.append("auction_pending")
+
+    if notice.notice_type == "EVICTION" or "EVICTION" in all_types:
+        signals.append("eviction_filed")
+
+    if notice.notice_type == "PROBATE_ESTATE" or "PROBATE_ESTATE" in all_types \
+            or notice.owner_deceased == "yes":
+        signals.append("probate")
+
+    if notice.notice_type == "LIS_PENDENS" or "LIS_PENDENS" in all_types:
+        signals.append("lis_pendens")
+
+    if getattr(notice, "expired_permit", "") == "yes":
+        signals.append("expired_permit")
+
+    return min(len(signals), 4), signals
+
+
+# Priority order for canonical notice_type when merging (higher index = higher priority)
+_NOTICE_TYPE_PRIORITY = [
+    "CODE_VIOLATION", "TAX_DELINQUENT", "EVICTION", "IMMINENTLY_DANGEROUS",
+    "TAX_SALE", "SHERIFF_MORTGAGE_FORECLOSURE", "LIS_PENDENS", "PROBATE_ESTATE",
+]
 
 
 def _dedup_notices(notices: list[NoticeData]) -> tuple[list[NoticeData], int]:
-    """Deduplicate within a single run by OPA parcel_id (primary) then address (secondary).
+    """Merge duplicate parcel records instead of dropping them.
 
-    A parcel appearing in both li_violations and bid4assets_tax in the same run
-    produces one DataSift record, not two.  Source priority is the order records
-    are passed in (config.PHILLY_SOURCES order from the caller).
-
-    Returns (deduplicated_list, count_removed).
+    Groups by parcel_id (primary) or normalized address (fallback).
+    For each group, picks one primary record (highest priority notice_type),
+    merges tags, and records all source notice_types in all_notice_types.
     """
-    seen_parcels: set[str] = set()
-    seen_addrs: set[str] = set()
-    result: list[NoticeData] = []
-    removed = 0
+    from collections import defaultdict
+
+    # Group by parcel_id or address
+    groups: dict[str, list[NoticeData]] = defaultdict(list)
+    key_order: list[str] = []
     for n in notices:
-        pid  = (n.parcel_id or "").strip()
+        pid = (n.parcel_id or "").strip()
         addr = (n.address or "").strip().lower()
-        if pid:
-            if pid in seen_parcels:
-                removed += 1
+        key = pid if pid else addr
+        if not key:
+            key = f"__nokey_{id(n)}"  # unique key for unkeyed records
+        if key not in groups:
+            key_order.append(key)
+        groups[key].append(n)
+
+    merged: list[NoticeData] = []
+    merged_count = 0
+
+    for key in key_order:
+        group = groups[key]
+        if len(group) == 1:
+            n = group[0]
+            n.all_notice_types = n.notice_type
+            n.signal_sources = n.source_url  # approximation; actual source_id not on record
+            merged.append(n)
+            continue
+
+        # Multiple records for same parcel — merge
+        merged_count += len(group) - 1
+
+        # Pick primary by priority
+        def priority(n: NoticeData) -> int:
+            try:
+                return _NOTICE_TYPE_PRIORITY.index(n.notice_type)
+            except ValueError:
+                return -1
+
+        primary = max(group, key=priority)
+
+        # Collect all notice_types and tags
+        all_types = list(dict.fromkeys(n.notice_type for n in group if n.notice_type))
+        primary.all_notice_types = ";".join(all_types)
+        primary.signal_sources = ";".join(
+            dict.fromkeys(n.source_url for n in group if n.source_url)
+        )
+
+        # Merge numeric/bool fields — take max/union
+        for n in group:
+            if n is primary:
                 continue
-            seen_parcels.add(pid)
-        elif addr:
-            if addr in seen_addrs:
-                removed += 1
-                continue
-            seen_addrs.add(addr)
-        result.append(n)
-    if removed:
-        logger.info("Dedup: removed %d cross-source duplicates (%d → %d)",
-                    removed, len(notices), len(result))
-    return result, removed
+            # Tax delinquency overlay
+            if n.tax_delinquent_amount and not primary.tax_delinquent_amount:
+                primary.tax_delinquent_amount = n.tax_delinquent_amount
+                primary.tax_delinquent_years  = n.tax_delinquent_years
+            # Deceased/obituary info
+            if n.owner_deceased == "yes" and primary.owner_deceased != "yes":
+                primary.owner_deceased      = n.owner_deceased
+                primary.date_of_death       = n.date_of_death
+                primary.obituary_url        = n.obituary_url
+                primary.decision_maker_name = n.decision_maker_name
+                primary.heir_map_json       = n.heir_map_json
+            # Expired permit flag
+            if n.expired_permit == "yes" and primary.expired_permit != "yes":
+                primary.expired_permit = "yes"
+
+        merged.append(primary)
+
+    if merged_count:
+        logger.info(
+            "Dedup merge: %d parcels merged from %d source records (%d → %d)",
+            merged_count, len(notices), len(notices), len(merged),
+        )
+    return merged, merged_count
 
 
 def _filter_rdi_commercial(notices: list[NoticeData]) -> tuple[list[NoticeData], int]:
@@ -205,6 +309,8 @@ _NICHE_LISTS: dict[str, str] = {
     "PROBATE_ESTATE":               "Probate",
     "TAX_SALE":                     "Tax Sale",
     "EVICTION":                     "Eviction",
+    "TAX_DELINQUENT":               "Tax Delinquent",
+    "IMMINENTLY_DANGEROUS":         "Code Enforcement",
 }
 
 
@@ -447,6 +553,29 @@ async def run_pipeline(
         stats["dedup_removed"]   = removed
         stats["total_after_dedup"] = len(notices)
 
+        # ── 3b. Tax delinquency enrichment overlay ───────────────────────────
+        # Enrich non-TAX_DELINQUENT records that have a parcel_id but no tax data yet.
+        logger.info("── Step 3b: Tax delinquency enrichment ──")
+        try:
+            from philadelphia_scrapers import _enrich_tax_delinquency
+            td_enriched = await _enrich_tax_delinquency(notices)
+            stats["tax_delinquent_enriched"] = td_enriched
+            logger.info("Tax delinquency enrichment: %d records enriched", td_enriched)
+        except Exception as exc:
+            logger.warning("Tax delinquency enrichment failed (non-fatal): %s", exc)
+            stats["tax_delinquent_enriched"] = 0
+
+        # ── 3c. Expired permit enrichment overlay ────────────────────────────
+        logger.info("── Step 3c: Expired permit enrichment ──")
+        try:
+            from philadelphia_scrapers import _enrich_expired_permits
+            ep_enriched = await _enrich_expired_permits(notices)
+            stats["expired_permit_enriched"] = ep_enriched
+            logger.info("Expired permit enrichment: %d records flagged", ep_enriched)
+        except Exception as exc:
+            logger.warning("Expired permit enrichment failed (non-fatal): %s", exc)
+            stats["expired_permit_enriched"] = 0
+
     # ── 4. Smarty address standardization (cache-aware) ─────────────────────
     logger.info("── Step 4: Smarty ──")
     if _SMARTY_AVAILABLE and config.SMARTY_AUTH_ID and config.SMARTY_AUTH_TOKEN:
@@ -494,6 +623,59 @@ async def run_pipeline(
             "stats": stats,
             "upload_result": None,
         }
+
+    # ── 6.5: Obituary enrichment (non-probate records with owner_name) ────────
+    logger.info("── Step 6.5: Obituary enrichment ──")
+    obit_candidates = [
+        n for n in notices
+        if n.notice_type != "PROBATE_ESTATE" and (n.owner_name or "").strip()
+    ]
+    stats["obit_candidates"] = len(obit_candidates)
+    if obit_candidates and not resume_from:
+        try:
+            from obituary_enricher import enrich_obituary_data
+            if config.ANTHROPIC_API_KEY:
+                enrich_obituary_data(
+                    obit_candidates,
+                    api_key=config.ANTHROPIC_API_KEY,
+                    skip_heir_verification=True,   # faster for Philly — no Knox Tax API
+                    skip_dm_address=True,
+                    skip_ancestry=True,
+                )
+                matched_count = sum(1 for n in obit_candidates if n.owner_deceased == "yes")
+                stats["obit_matched"] = matched_count
+                logger.info("Obituary enrichment: %d candidates, %d matched",
+                            len(obit_candidates), matched_count)
+            else:
+                logger.info("Obituary enrichment: ANTHROPIC_API_KEY not set — skipping")
+                stats["obit_matched"] = 0
+        except Exception as exc:
+            logger.warning("Obituary enrichment failed (non-fatal): %s", exc)
+            stats["obit_matched"] = 0
+    else:
+        if resume_from:
+            logger.info("Obituary enrichment: skipped (resume mode)")
+        else:
+            logger.info("Obituary enrichment: 0 candidates — skipped")
+        stats["obit_matched"] = 0
+
+    # ── 6.6: Distress tier scoring + Tier-0 safety filter ───────────────────
+    logger.info("── Step 6.6: Distress tier scoring ──")
+    pre_filter = len(notices)
+    notices = [n for n in notices if compute_distress_tier(n)[0] > 0]
+    tier0_dropped = pre_filter - len(notices)
+    if tier0_dropped:
+        logger.warning(
+            "Tier-0 safety filter: dropped %d records with no distress signals",
+            tier0_dropped,
+        )
+    stats["tier0_dropped"] = tier0_dropped
+
+    from collections import Counter
+    tier_dist = Counter(compute_distress_tier(n)[0] for n in notices)
+    tier_str = "  ".join(f"T{t}={c}" for t, c in sorted(tier_dist.items()))
+    logger.info("Distress tier distribution: %s", tier_str)
+    stats["tier_distribution"] = dict(tier_dist)
 
     # ── 7. Tracerfly — DP candidates only (PROBATE_ESTATE) ──────────────────
     # Skipped in resume mode — phones already preserved from the original run.
@@ -761,8 +943,19 @@ def _build_slack_summary(
         f"Filters: dedup −{stats['dedup_removed']}  "
         f"RDI −{stats['rdi_removed']}  "
         f"validation −{stats['validation_removed']}  "
+        f"tier0 −{stats.get('tier0_dropped', 0)}  "
         f"→ {stats['csv_written']} records"
     )
+
+    # Distress tier distribution
+    tier_dist = stats.get("tier_distribution", {})
+    if tier_dist:
+        tier_labels = {1: "Cold", 2: "Warm", 3: "Hot", 4: "Critical"}
+        tier_str = "  ".join(
+            f"T{t}({tier_labels.get(t, '?')})={c}"
+            for t, c in sorted(tier_dist.items())
+        )
+        lines.append(f"Tiers: {tier_str}")
 
     # Bucket upload
     ur = upload_result or {}

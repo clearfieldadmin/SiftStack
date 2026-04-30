@@ -302,6 +302,8 @@ NOTICE_TYPE_TO_LIST = {
     "EVICTION":                     "Eviction",
     "CODE_VIOLATION":               "Code Violation",
     "LIS_PENDENS":                  "Pre-Foreclosure",
+    "TAX_DELINQUENT":               "Tax Delinquent",   # Philly uppercase
+    "IMMINENTLY_DANGEROUS":         "Code Enforcement",
 }
 
 
@@ -412,6 +414,26 @@ def _build_tags(notice: NoticeData) -> str:
     # Photo import tag (source_url starts with "photo:")
     if notice.source_url and notice.source_url.startswith("photo:"):
         tags.append("photo_import")
+
+    # Expired permit tag
+    if getattr(notice, "expired_permit", "") == "yes":
+        tags.append("expired_permit")
+
+    # Distress tier scoring
+    try:
+        from philly_pipeline import compute_distress_tier
+        tier, tier_signals = compute_distress_tier(notice)
+        tier_names = {
+            0: "distress_tier_0_NoSignal",
+            1: "distress_tier_1_Cold",
+            2: "distress_tier_2_Warm",
+            3: "distress_tier_3_Hot",
+            4: "distress_tier_4_Critical",
+        }
+        tags.append(tier_names[tier])
+        tags.extend(tier_signals)
+    except Exception:
+        pass  # Non-fatal — tier scoring failure should not block CSV write
 
     return ",".join(tags)
 

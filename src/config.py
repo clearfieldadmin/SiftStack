@@ -219,6 +219,25 @@ PHILLY_SOURCES: list[PhillySource] = [
         cadence="daily",
         run_time_et="08:00",
     ),
+    PhillySource(
+        source_id="opa_tax_delinquent",
+        notice_type="TAX_DELINQUENT",
+        county="Philadelphia",
+        state="PA",
+        description="Real Estate Tax Delinquencies — OpenDataPhilly Carto (2+ years, balance >= $5K)",
+        cadence="weekly",
+        run_days_et="Mon",
+        run_time_et="08:00",
+    ),
+    PhillySource(
+        source_id="li_imminently_dangerous",
+        notice_type="IMMINENTLY_DANGEROUS",
+        county="Philadelphia",
+        state="PA",
+        description="Imminently Dangerous Structures — L&I violations filtered by prioritydesc",
+        cadence="daily",
+        run_time_et="08:05",
+    ),
     # DEFERRED — FJD reCAPTCHA v3 score threshold unachievable via automated
     # means as of April 2026. Revisit if score threshold changes or alternative
     # authentication path becomes available.
