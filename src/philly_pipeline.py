@@ -625,13 +625,15 @@ async def run_pipeline(
         }
 
     # ── 6.5: Obituary enrichment (non-probate records with owner_name) ────────
+    # Only runs in full production mode (upload=True) — obituary search is slow
+    # and rate-limited; micro-runs / dry-runs skip it entirely.
     logger.info("── Step 6.5: Obituary enrichment ──")
     obit_candidates = [
         n for n in notices
         if n.notice_type != "PROBATE_ESTATE" and (n.owner_name or "").strip()
     ]
     stats["obit_candidates"] = len(obit_candidates)
-    if obit_candidates and not resume_from:
+    if obit_candidates and not resume_from and upload_datasift:
         try:
             from obituary_enricher import enrich_obituary_data
             if config.ANTHROPIC_API_KEY:
@@ -655,6 +657,8 @@ async def run_pipeline(
     else:
         if resume_from:
             logger.info("Obituary enrichment: skipped (resume mode)")
+        elif not upload_datasift:
+            logger.info("Obituary enrichment: skipped (no-upload / dry-run mode)")
         else:
             logger.info("Obituary enrichment: 0 candidates — skipped")
         stats["obit_matched"] = 0
