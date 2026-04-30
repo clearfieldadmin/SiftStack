@@ -221,6 +221,24 @@ async def dismiss_popups(page) -> None:
             document.querySelectorAll('[class*="nps-iframe"], [class*="beamer"]').forEach(
                 el => { el.remove(); removed++; }
             );
+            // Remove inline NPS/recommendation survey widget (blocks Next Step button
+            // at bottom of upload wizard). DataSift shows "How likely are you to
+            // recommend REISift?" with 0-10 rating — it is NOT the Beamer iframe.
+            for (const el of document.querySelectorAll('*')) {
+                const t = el.textContent || '';
+                if (t.includes('recommend REISift') || t.includes('recommend REiSift')) {
+                    // Walk up to find the shallowest container for this popup
+                    let target = el;
+                    while (target.parentElement &&
+                           target.parentElement !== document.body &&
+                           (target.parentElement.textContent || '').includes('recommend')) {
+                        target = target.parentElement;
+                    }
+                    target.remove();
+                    removed++;
+                    break;
+                }
+            }
             // Look for the notification popup overlay
             const els = document.querySelectorAll(
                 '[class*="notification"], [class*="Notification"], '

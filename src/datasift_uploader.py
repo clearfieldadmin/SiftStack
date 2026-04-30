@@ -30,22 +30,50 @@ DATASIFT_UPLOAD_URL = "https://app.reisift.io/records/properties"
 async def _click_next_step(page: Page, timeout: int = 20000) -> bool:
     """Click the 'Next Step' button that appears in the upload wizard.
 
-    Default timeout is 20s to handle slow SPA rendering in headless/cloud
-    environments (Apify containers take longer than local desktop).
+    Attempts in order:
+    1. Playwright locator with wait (respects React rendering + disabled state)
+    2. JS force-click — bypasses disabled/pointer-events-none on the button
+    3. JS broad search — finds any nav button not labelled Cancel/Back
+
+    Default timeout 20s; pass 60000 for the Step 3→4 transition where
+    DataSift runs server-side column detection after file upload.
     """
+    btn = page.locator(
+        'button:has-text("Next Step"), '
+        'button:has-text("Next"), '
+        'button:has-text("Continue")'
+    )
+    # Attempt 1: normal Playwright click (waits for visible + enabled)
     try:
-        btn = page.locator(
-            'button:has-text("Next Step"), '
-            'button:has-text("Next"), '
-            'button:has-text("Continue")'
-        )
         await btn.first.wait_for(state="visible", timeout=timeout)
         await btn.first.click()
         await page.wait_for_timeout(2000)
         return True
     except PwTimeout:
-        logger.warning("Next Step button not found within %dms", timeout)
-        return False
+        logger.warning("Next Step not visible within %dms — trying force click", timeout)
+
+    # Attempt 2: JS force-click on first matching button (bypasses disabled)
+    try:
+        clicked = await page.evaluate("""() => {
+            const btn = document.querySelector(
+                'button'
+            );
+            const all = Array.from(document.querySelectorAll('button'));
+            const next = all.find(b =>
+                /next step|^next$|continue/i.test(b.textContent.trim())
+            );
+            if (next) { next.click(); return true; }
+            return false;
+        }""")
+        if clicked:
+            await page.wait_for_timeout(2000)
+            logger.info("Next Step clicked via JS force (was disabled/not-visible)")
+            return True
+    except Exception as e:
+        logger.warning("JS force click failed: %s", e)
+
+    logger.warning("Next Step button not found after all attempts")
+    return False
 
 
 async def upload_csv(
@@ -431,7 +459,13 @@ async def upload_csv(
         return result
 
     await _screenshot(page, "step3_file_uploaded")
-    await _click_next_step(page)
+    # Dismiss any popups (e.g., inline NPS survey) that appeared during file upload —
+    # they block the Next Step button at the bottom of the wizard.
+    await _dismiss_popups(page)
+    await page.wait_for_timeout(1000)
+    # 60s timeout — DataSift runs server-side column detection after upload;
+    # this takes longer than the default 20s, especially with large CSVs.
+    await _click_next_step(page, timeout=60000)
 
     # ── Wizard Step 4: Map the columns ──
     logger.info("Wizard Step 4: Column mapping — mapping Tags and Lists...")
@@ -604,7 +638,6 @@ async def upload_csv(
     await page.wait_for_timeout(2000)
     await _screenshot(page, "step5_review")
 
-    finish_clicked = False
     try:
         finish_btn = page.locator(
             'button:has-text("Finish Upload"), '
@@ -613,7 +646,6 @@ async def upload_csv(
         )
         if await finish_btn.count() > 0:
             await finish_btn.first.click()
-            finish_clicked = True
             logger.info("Clicked Finish Upload")
         else:
             await _screenshot(page, "step5_no_finish_btn")
