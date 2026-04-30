@@ -473,7 +473,8 @@ async def scrape_opa_tax_delinquent(lookback_days: int = 7) -> list[NoticeData]:
         "mailing_state, mailing_zip "
         "FROM real_estate_tax_delinquencies "
         "WHERE num_years_owed >= 2 AND total_due >= 5000 "
-        "LIMIT 5000"
+        "ORDER BY total_due DESC "
+        "LIMIT 50000"
     )
     params = {"q": query, "format": "json"}
 
