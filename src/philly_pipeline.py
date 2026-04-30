@@ -134,13 +134,13 @@ def _opa_meta(notice: NoticeData) -> dict:
 def _is_dp_candidate(notice: NoticeData) -> bool:
     """True if this notice requires Tracerfly / Trestle deep-prospecting treatment.
 
-    Expanded from PROBATE_ESTATE-only to include any notice with a confirmed
-    deceased owner (obituary-matched) or heir map populated by obituary enrichment.
+    heir_map_json is intentionally excluded — OPA enrichment populates it with
+    owner-status metadata for all records, making it useless as a DP signal.
+    Only fire Tracerfly when the obituary enricher has confirmed a deceased owner.
     """
     return (
         notice.notice_type == "PROBATE_ESTATE"
         or notice.owner_deceased == "yes"
-        or bool(notice.heir_map_json)
         or bool(notice.decision_maker_name)
     )
 
