@@ -604,6 +604,7 @@ async def upload_csv(
     await page.wait_for_timeout(2000)
     await _screenshot(page, "step5_review")
 
+    finish_clicked = False
     try:
         finish_btn = page.locator(
             'button:has-text("Finish Upload"), '
@@ -612,14 +613,27 @@ async def upload_csv(
         )
         if await finish_btn.count() > 0:
             await finish_btn.first.click()
+            finish_clicked = True
             logger.info("Clicked Finish Upload")
         else:
             await _screenshot(page, "step5_no_finish_btn")
-            logger.warning("Finish Upload button not found")
+            result["message"] = (
+                "Finish Upload button not found — wizard stalled before Step 5 "
+                "(likely Step 4 Next Step timed out in headless env)"
+            )
+            logger.error(result["message"])
+            result["success"] = False
+            return result
     except Exception as e:
-        logger.warning("Finish step: %s", e)
+        result["message"] = f"Finish Upload click failed: {e}"
+        logger.error(result["message"])
+        result["success"] = False
+        return result
 
-    # Wait for processing confirmation
+    # Wait for processing confirmation — only reached when Finish Upload was clicked.
+    # DataSift processes uploads asynchronously, so a confirmation timeout is normal;
+    # treat it as tentative success (the upload is in the queue).
+    # A missing Finish Upload button (above) is a definitive failure — don't conflate the two.
     try:
         success_indicator = page.locator(
             'text="Upload Complete", '
@@ -637,7 +651,7 @@ async def upload_csv(
         await _screenshot(page, "step5_timeout")
         result["message"] = "Upload may have succeeded but confirmation timed out — check Activity page"
         logger.warning(result["message"])
-        result["success"] = True
+        result["success"] = True  # Finish Upload was clicked; DataSift queued it
 
     await _save_cookies(page)
     return result
