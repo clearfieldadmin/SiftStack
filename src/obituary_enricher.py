@@ -31,7 +31,7 @@ MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 1024
 SEARCH_DELAY_MIN = 0.5
 SEARCH_DELAY_MAX = 1.0
-PARALLEL_WORKERS = 6  # Concurrent heir verifications
+PARALLEL_WORKERS = 3  # Concurrent heir verifications (match engine count)
 FETCH_TIMEOUT = 20
 MAX_OBITUARY_TEXT = 6000
 MAX_ADDRESS_TEXT = 15000  # Larger limit for people search pages (CBC has 250+ results)
@@ -44,7 +44,7 @@ MAX_DOD_GAP_YEARS = 3
 STATE_FULL = os.getenv("OBITUARY_STATE_FULL", "Pennsylvania")
 STATE_ABBR = os.getenv("OBITUARY_STATE_ABBR", "PA")
 DEFAULT_CITY = os.getenv("OBITUARY_DEFAULT_CITY", "Philadelphia")
-PER_NAME_TIMEOUT = int(os.getenv("OBITUARY_PER_NAME_TIMEOUT", "60"))
+PER_NAME_TIMEOUT = int(os.getenv("OBITUARY_PER_NAME_TIMEOUT", "30"))
 DISABLE_OBITUARY = os.getenv("DISABLE_OBITUARY", "false").lower() == "true"
 
 
@@ -417,7 +417,7 @@ def _search_obituary(name: str, city: str, extra_terms: str = "") -> list[dict]:
     query = f'{name} {keyword} {STATE_FULL}' if not city else f'{name} {keyword} {city} {STATE_FULL}'
 
     try:
-        results = DDGS().text(query, max_results=8, backend="google,duckduckgo,brave")
+        results = DDGS().text(query, max_results=8, backend="duckduckgo,brave,yahoo")
     except Exception as e:
         logger.debug("Search failed for '%s': %s", query, e)
         return []
@@ -582,7 +582,7 @@ def _refetch_specific_obituary(
 
     for query in queries:
         try:
-            results = DDGS().text(query, max_results=5, backend="google,duckduckgo,brave")
+            results = DDGS().text(query, max_results=5, backend="duckduckgo,brave,yahoo")
         except Exception:
             continue
 
@@ -674,7 +674,7 @@ def _search_survivors_targeted(
     all_snippets = []
     for query in queries:
         try:
-            results = DDGS().text(query, max_results=5, backend="google,duckduckgo,brave")
+            results = DDGS().text(query, max_results=5, backend="duckduckgo,brave,yahoo")
             for r in results:
                 snippet = r.get("body", "")
                 title = r.get("title", "")
@@ -849,7 +849,7 @@ def _lookup_dm_address_web(name: str, city: str, api_key: str) -> dict | None:
 
     for query in queries:
         try:
-            results = DDGS().text(query, max_results=5, backend="google,duckduckgo,brave")
+            results = DDGS().text(query, max_results=5, backend="duckduckgo,brave,yahoo")
         except Exception:
             time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
             continue
@@ -2416,6 +2416,10 @@ def enrich_obituary_data(
                 miss_fetch_failed += 1
             else:
                 miss_llm_rejected += 1
+
+        elapsed_s = time.monotonic() - candidate_start
+        logger.info("obit_timing name=%r elapsed_s=%.1f result=%s",
+                    raw_name, elapsed_s, "hit" if found else "miss")
 
         if i % 25 == 0:
             logger.info(

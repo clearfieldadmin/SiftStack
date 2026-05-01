@@ -29,9 +29,9 @@ on:
         required: false
         default: 'true'
       enable_obituary:
-        description: 'Enable obituary enrichment (on by default; set false to disable)'
+        description: 'Enable obituary enrichment (off by default until p95 latency validated under 30s)'
         type: boolean
-        default: true
+        default: false
 
 # ─────────────────────────────────────────────────────────────────
 # Shared env block referenced by both jobs
@@ -60,9 +60,9 @@ env:
   TNPN_PASSWORD:          ${{ secrets.TNPN_PASSWORD }}
   TRACERFY_API_KEY:       ${{ secrets.TRACERFY_API_KEY }}
   TRESTLE_API_KEY:        ${{ secrets.TRESTLE_API_KEY }}
-  # Obituary enrichment off by default — TN-specific searches return 0 hits for PA owners.
-  # Enable via workflow_dispatch input when obituary enrichment is ported to PA context.
-  DISABLE_OBITUARY:       ${{ github.event.inputs.enable_obituary == 'false' && 'true' || 'false' }}
+  # Obituary enrichment off by default — enable via workflow_dispatch enable_obituary=true
+  # after p95 per-name latency is validated under 30s.
+  DISABLE_OBITUARY:       ${{ github.event.inputs.enable_obituary == 'true' && 'false' || 'true' }}
 
 jobs:
   # ───────────────────────────────────────────────────────────────
@@ -83,6 +83,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Restore phone score cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache/scored_phones.json
+          key: scored-phones-${{ github.run_id }}
+          restore-keys: |
+            scored-phones-
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
@@ -148,7 +156,7 @@ jobs:
   bid4assets:
     name: Bid4Assets — Mortgage / Tax (Mon + Thu)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        (inputs.job == 'bid4assets' || inputs.job == 'all')) ||
@@ -158,6 +166,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Restore phone score cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache/scored_phones.json
+          key: scored-phones-${{ github.run_id }}
+          restore-keys: |
+            scored-phones-
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
