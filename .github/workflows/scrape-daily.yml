@@ -28,6 +28,10 @@ on:
         description: 'Run Trestle phone scoring (true/false)'
         required: false
         default: 'true'
+      enable_obituary:
+        description: 'Enable obituary enrichment (on by default; set false to disable)'
+        type: boolean
+        default: true
 
 # ─────────────────────────────────────────────────────────────────
 # Shared env block referenced by both jobs
@@ -56,6 +60,9 @@ env:
   TNPN_PASSWORD:          ${{ secrets.TNPN_PASSWORD }}
   TRACERFY_API_KEY:       ${{ secrets.TRACERFY_API_KEY }}
   TRESTLE_API_KEY:        ${{ secrets.TRESTLE_API_KEY }}
+  # Obituary enrichment off by default — TN-specific searches return 0 hits for PA owners.
+  # Enable via workflow_dispatch input when obituary enrichment is ported to PA context.
+  DISABLE_OBITUARY:       ${{ github.event.inputs.enable_obituary == 'false' && 'true' || 'false' }}
 
 jobs:
   # ───────────────────────────────────────────────────────────────

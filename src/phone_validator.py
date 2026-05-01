@@ -35,6 +35,28 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# ── Trestle dedup cache ───────────────────────────────────────────────────────
+# Persists scored phone numbers to avoid re-calling Trestle for already-scored
+# numbers across daily runs.  DataSift skip-trace is idempotent so the number
+# set returned per run is naturally bounded to new records only.
+_CACHE_PATH = Path("data/cache/scored_phones.json")
+
+
+def _load_phone_cache() -> dict:
+    if _CACHE_PATH.exists():
+        try:
+            return json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_phone_cache(cache: dict) -> None:
+    _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _CACHE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    tmp.replace(_CACHE_PATH)
+
 # ── Tier Configuration ────────────────────────────────────────────────────
 
 DEFAULT_TIERS = {
@@ -281,6 +303,12 @@ def process_phones(
     # Deduplicate
     unique_phones = list(dict.fromkeys(p[1] for p in phones))
     total = len(unique_phones)
+
+    # Load dedup cache — skip Trestle calls for already-scored numbers
+    phone_cache = _load_phone_cache()
+    cache_hits = 0
+    api_calls = 0
+
     logger.info("Processing %d unique phone numbers...", total)
 
     results = []
@@ -290,10 +318,27 @@ def process_phones(
     for batch_start in range(0, total, batch_size):
         batch = unique_phones[batch_start : batch_start + batch_size]
 
-        with ThreadPoolExecutor(max_workers=min(batch_size, len(batch))) as executor:
+        # Resolve cache hits synchronously before spawning threads
+        uncached_batch = []
+        for phone in batch:
+            if phone in phone_cache:
+                cached = phone_cache[phone]
+                results.append(cached)
+                cache_hits += 1
+                processed += 1
+            else:
+                uncached_batch.append(phone)
+
+        if not uncached_batch:
+            if processed % (batch_size * 5) == 0 or processed == total:
+                logger.info("  Progress: %d/%d (%d%%)", processed, total,
+                            int(processed / total * 100))
+            continue
+
+        with ThreadPoolExecutor(max_workers=min(batch_size, len(uncached_batch))) as executor:
             future_to_phone = {
                 executor.submit(call_trestle, phone, api_key, add_litigator): phone
-                for phone in batch
+                for phone in uncached_batch
             }
 
             for future in as_completed(future_to_phone):
@@ -323,7 +368,7 @@ def process_phones(
                         "phone.is_litigator_risk", None
                     )
 
-                results.append({
+                row = {
                     "phone_number": phone,
                     "activity_score": score,
                     "line_type": line_type,
@@ -332,7 +377,10 @@ def process_phones(
                     "is_prepaid": data.get("is_prepaid"),
                     "assigned_tag": tier,
                     "is_litigator_risk": litigator_risk,
-                })
+                }
+                results.append(row)
+                phone_cache[phone] = row  # persist for future runs
+                api_calls += 1
 
                 # Progress every 25 records
                 if processed % 25 == 0 or processed == total:
@@ -343,6 +391,8 @@ def process_phones(
         if batch_start + batch_size < total and delay > 0:
             time.sleep(delay)
 
+    _save_phone_cache(phone_cache)
+    logger.info("Phone cache: %d hits, %d new Trestle API calls", cache_hits, api_calls)
     return results, errors
 
 
