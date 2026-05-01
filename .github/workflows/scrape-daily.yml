@@ -1,17 +1,18 @@
 name: Philadelphia Daily Pipeline
 
 # Schedules (UTC — Philadelphia is ET = UTC-4 in summer, UTC-5 in winter)
-# 12:00 UTC = 08:00 ET (summer DST).  Adjust to 13:00 UTC in November for EST.
-#
-# Two crons in one workflow = two independent workflow runs per firing:
-#   Every day 12:00 UTC  → "daily" job fires  (L&I, probate, evictions)
-#   Mon + Thu 12:00 UTC  → "bid4assets" job fires (mortgage + tax foreclosure)
-#   On Mon/Thu BOTH jobs fire in parallel — each uploads to "SiftStack {date}"
+# Primary cron  : 12:00 UTC = 08:00 ET
+# Backup cron   : 13:00 UTC = 09:00 ET  (fires if GHA missed the 8 AM window)
+# Idempotency   : backup cron checks run history before executing;
+#                 if a successful run already completed today, it exits 0 silently.
+# workflow_dispatch always executes (bypasses idempotency check).
 
 on:
   schedule:
-    - cron: '0 12 * * *'      # 08:00 ET daily   — L&I, probate, evictions
-    - cron: '0 12 * * 1,4'    # 08:00 ET Mon+Thu  — Bid4Assets
+    - cron: '0 12 * * *'      # 08:00 ET daily   — L&I, probate, evictions (primary)
+    - cron: '0 13 * * *'      # 09:00 ET daily   — backup (skips if primary already ran)
+    - cron: '0 12 * * 1,4'    # 08:00 ET Mon+Thu  — Bid4Assets (primary)
+    - cron: '0 13 * * 1,4'    # 09:00 ET Mon+Thu  — Bid4Assets backup
 
   workflow_dispatch:
     inputs:
@@ -59,7 +60,8 @@ env:
 jobs:
   # ───────────────────────────────────────────────────────────────
   # Job 1: Daily sources — L&I violations, probate, evictions
-  # Fires every day on schedule; on workflow_dispatch when job=daily|all
+  # Primary: 12:00 UTC  |  Backup: 13:00 UTC (idempotency-protected)
+  # workflow_dispatch: fires when job=daily|all
   # ───────────────────────────────────────────────────────────────
   daily:
     name: Daily — L&I / Probate / Evictions
@@ -68,7 +70,8 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        (inputs.job == 'daily' || inputs.job == 'all')) ||
-      github.event.schedule == '0 12 * * *'
+      github.event.schedule == '0 12 * * *' ||
+      github.event.schedule == '0 13 * * *'
 
     steps:
       - name: Checkout
@@ -89,7 +92,28 @@ jobs:
           playwright install-deps chromium
 
       - name: Run daily pipeline
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Idempotency check — only for scheduled backup cron, not manual runs
+          if [ "${{ github.event_name }}" = "schedule" ] && \
+             [ "${{ github.event.schedule }}" = "0 13 * * *" ]; then
+            TODAY=$(date -u +%Y-%m-%d)
+            PRIOR=$(gh run list \
+              --workflow=scrape-daily.yml \
+              --branch=main \
+              --json conclusion,createdAt,event \
+              --limit 20 \
+              --jq "[.[] | select(.createdAt | startswith(\"$TODAY\")) | select(.conclusion==\"success\")] | length" \
+              --repo ${{ github.repository }})
+            echo "Prior successful runs today: $PRIOR"
+            if [ "$PRIOR" -gt 0 ]; then
+              echo "✓ Backup cron: successful run already completed today — skipping"
+              exit 0
+            fi
+            echo "→ Backup cron: no successful run found today, proceeding"
+          fi
+
           PHONE_FLAG=""
           if [ "${{ inputs.phone_scoring }}" = "false" ]; then
             PHONE_FLAG="--no-phone-scoring"
@@ -110,7 +134,8 @@ jobs:
 
   # ───────────────────────────────────────────────────────────────
   # Job 2: Bid4Assets — mortgage + tax foreclosure (Mon + Thu only)
-  # Fires Mon/Thu on schedule; on workflow_dispatch when job=bid4assets|all
+  # Primary: 12:00 UTC Mon+Thu  |  Backup: 13:00 UTC Mon+Thu
+  # workflow_dispatch: fires when job=bid4assets|all
   # Phone scoring OFF — daily job already scored today's list
   # ───────────────────────────────────────────────────────────────
   bid4assets:
@@ -120,7 +145,8 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        (inputs.job == 'bid4assets' || inputs.job == 'all')) ||
-      github.event.schedule == '0 12 * * 1,4'
+      github.event.schedule == '0 12 * * 1,4' ||
+      github.event.schedule == '0 13 * * 1,4'
 
     steps:
       - name: Checkout
@@ -141,7 +167,28 @@ jobs:
           playwright install-deps chromium
 
       - name: Run Bid4Assets pipeline
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Idempotency check — only for scheduled backup cron, not manual runs
+          if [ "${{ github.event_name }}" = "schedule" ] && \
+             [ "${{ github.event.schedule }}" = "0 13 * * 1,4" ]; then
+            TODAY=$(date -u +%Y-%m-%d)
+            PRIOR=$(gh run list \
+              --workflow=scrape-daily.yml \
+              --branch=main \
+              --json conclusion,createdAt,event \
+              --limit 20 \
+              --jq "[.[] | select(.createdAt | startswith(\"$TODAY\")) | select(.conclusion==\"success\")] | length" \
+              --repo ${{ github.repository }})
+            echo "Prior successful runs today: $PRIOR"
+            if [ "$PRIOR" -gt 0 ]; then
+              echo "✓ Backup cron: successful run already completed today — skipping"
+              exit 0
+            fi
+            echo "→ Backup cron: no successful run found today, proceeding"
+          fi
+
           python run_philly_daily.py \
             --lookback ${{ inputs.lookback || '1' }} \
             --sources bid4assets_mortgage bid4assets_tax \
