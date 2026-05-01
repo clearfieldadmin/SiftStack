@@ -311,6 +311,7 @@ _NICHE_LISTS: dict[str, str] = {
     "EVICTION":                     "Eviction",
     "TAX_DELINQUENT":               "Tax Delinquent",
     "IMMINENTLY_DANGEROUS":         "Code Enforcement",
+    "LIS_PENDENS":                  "Pre-Foreclosure",
 }
 
 
@@ -663,17 +664,12 @@ async def run_pipeline(
             logger.info("Obituary enrichment: 0 candidates — skipped")
         stats["obit_matched"] = 0
 
-    # ── 6.6: Distress tier scoring + Tier-0 safety filter ───────────────────
+    # ── 6.6: Distress tier scoring ───────────────────────────────────────────
+    # Tier is presentation/sorting metadata only — NOT a pipeline gate.
+    # Every record uploads regardless of tier; DataSift presets do downstream
+    # segmentation by distress_tier_X_Name tag.
     logger.info("── Step 6.6: Distress tier scoring ──")
-    pre_filter = len(notices)
-    notices = [n for n in notices if compute_distress_tier(n)[0] > 0]
-    tier0_dropped = pre_filter - len(notices)
-    if tier0_dropped:
-        logger.warning(
-            "Tier-0 safety filter: dropped %d records with no distress signals",
-            tier0_dropped,
-        )
-    stats["tier0_dropped"] = tier0_dropped
+    stats["tier0_dropped"] = 0   # no longer dropped
 
     from collections import Counter
     tier_dist = Counter(compute_distress_tier(n)[0] for n in notices)

@@ -300,7 +300,7 @@ NOTICE_TYPE_TO_LIST = {
     "PROBATE_ESTATE":               "Probate",
     "TAX_SALE":                     "Tax Sale",
     "EVICTION":                     "Eviction",
-    "CODE_VIOLATION":               "Code Violation",
+    "CODE_VIOLATION":               "Code Enforcement",
     "LIS_PENDENS":                  "Pre-Foreclosure",
     "TAX_DELINQUENT":               "Tax Delinquent",   # Philly uppercase
     "IMMINENTLY_DANGEROUS":         "Code Enforcement",
