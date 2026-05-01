@@ -126,15 +126,11 @@ async def upload_csv(
     # Wait for SPA to fully render (longer for headless/cloud environments)
     await page.wait_for_timeout(8000)
 
-    # Dismiss notifications popup if present
-    try:
-        no_thanks = page.locator('button:has-text("NO, THANKS"), button:has-text("No, thanks")')
-        if await no_thanks.count() > 0:
-            await no_thanks.first.click()
-            await page.wait_for_timeout(500)
-            logger.debug("Dismissed notifications popup")
-    except Exception as e:
-        logger.debug("Popup dismissal failed: %s", e)
+    # Dismiss NPS popup / Beamer iframe before clicking Upload File.
+    # The #npsIframeContainer iframe intercepts ALL pointer events globally
+    # when active — must be removed from DOM before any sidebar click.
+    await _dismiss_popups(page)
+    await page.wait_for_timeout(500)
 
     try:
         # The Upload File button is in the sidebar — it's a styled element, not a <button>
