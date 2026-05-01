@@ -629,6 +629,10 @@ async def upload_csv(
 
     await _screenshot(page, "step4_after_mapping")
 
+    # Dismiss any popups before advancing to Step 5 (NPS survey blocks the button)
+    await _dismiss_popups(page)
+    await page.wait_for_timeout(500)
+
     # Click Next Step to proceed past mapping
     await _click_next_step(page)
     await _screenshot(page, "step4_mapping_done")
@@ -637,6 +641,10 @@ async def upload_csv(
     logger.info("Wizard Step 5: Review and finish upload...")
     await page.wait_for_timeout(2000)
     await _screenshot(page, "step5_review")
+
+    # Dismiss any popups before Finish Upload (NPS survey can reappear here)
+    await _dismiss_popups(page)
+    await page.wait_for_timeout(500)
 
     try:
         finish_btn = page.locator(

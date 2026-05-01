@@ -203,7 +203,11 @@ async def dismiss_popups(page) -> None:
     """
     try:
         # Try clicking dismiss text elements first
-        for text in ["NO, THANKS", "No, thanks", "No Thanks", "NO THANKS", "Not Now", "Dismiss"]:
+        for text in [
+            "NO, THANKS", "No, thanks", "No Thanks", "NO THANKS",
+            "Not Now", "Not now", "Dismiss", "Maybe later",
+            "Maybe Later", "Skip", "SKIP", "Close", "CLOSE",
+        ]:
             el = page.get_by_text(text, exact=True)
             if await el.count() > 0:
                 await el.first.click(force=True)
@@ -217,23 +221,30 @@ async def dismiss_popups(page) -> None:
             // Remove Beamer NPS survey iframe (blocks pointer events globally)
             const nps = document.getElementById('npsIframeContainer');
             if (nps) { nps.remove(); removed++; }
-            // Also remove by class
-            document.querySelectorAll('[class*="nps-iframe"], [class*="beamer"]').forEach(
-                el => { el.remove(); removed++; }
-            );
+            // Also remove by class, data-testid, or aria-label
+            document.querySelectorAll(
+                '[class*="nps-iframe"], [class*="beamer"], '
+                + '[data-testid*="nps"], [data-testid*="survey"], '
+                + '[aria-label*="survey"], [aria-label*="nps"]'
+            ).forEach(el => { el.remove(); removed++; });
             // Remove inline NPS recommendation survey (blocks Next Step button at
             // bottom of upload wizard). DataSift shows "How likely are you to
             // recommend REISift?" with 0-10 rating. Only search div/section elements
-            // in the bottom half of the viewport — avoids matching body/html.
+            // in the bottom 60% of the viewport — avoids matching body/html.
             const viewH = window.innerHeight;
             for (const el of document.querySelectorAll('div, section, aside, article')) {
                 if (!(el.textContent || '').includes('recommend REISift')) continue;
                 const rect = el.getBoundingClientRect();
-                if (rect.top < viewH * 0.4) continue;  // skip elements not near bottom
+                if (rect.top < viewH * 0.3) continue;  // skip elements not near bottom
                 // Try clicking the close × button inside first
-                const closeBtn = el.querySelector('button') ||
-                    el.querySelector('[class*="close"]') ||
-                    el.querySelector('[aria-label*="close"]');
+                const closeBtn =
+                    el.querySelector('[aria-label*="close"]') ||
+                    el.querySelector('[aria-label*="Close"]') ||
+                    el.querySelector('[aria-label*="dismiss"]') ||
+                    el.querySelector('[data-testid*="close"]') ||
+                    el.querySelector('button[class*="close"]') ||
+                    el.querySelector('button[class*="Close"]') ||
+                    el.querySelector('button');
                 if (closeBtn) { closeBtn.click(); }
                 else { el.remove(); }
                 removed++;
