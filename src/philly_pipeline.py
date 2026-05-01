@@ -324,7 +324,13 @@ def _write_niche_list_csvs(notices: list[NoticeData]) -> list[dict]:
     result: list[dict] = []
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     for notice_type, list_name in _NICHE_LISTS.items():
-        subset = [n for n in notices if n.notice_type == notice_type]
+        # Use all_notice_types (merged compound signals) so a parcel flagged by
+        # multiple sources appears in each matching niche list simultaneously.
+        # DataSift handles multi-list membership at the CRM layer — no duplicates.
+        subset = [
+            n for n in notices
+            if notice_type in (n.all_notice_types or n.notice_type or "").split(";")
+        ]
         if not subset:
             logger.info("Niche list '%s': 0 records — skipping upload", list_name)
             continue
