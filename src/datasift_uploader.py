@@ -505,15 +505,29 @@ async def upload_csv(
     # (mouse events fired) but DataSift's React state never updated, so Lists values
     # in the CSV were never applied to records.
     async def _locate_col_element(col_name: str, side: str):
-        """Find the column card (side='left', x<500) or target slot (side='right', x>600).
+        """Find the column card label (side='left') or target slot label (side='right').
 
-        Uses :has-text() (contains) not :text-is() (exact) — DataSift column cards
-        include sample data alongside the column name so exact match never fires.
+        The original :has-text() selector matched ancestor containers in DOM tree
+        order (html → body → panel wrapper, all at x=0) before reaching the leaf
+        label element, so all drag attempts operated on the wrong element.
+
+        Fix: get_by_text(exact=True) matches only elements whose full text IS
+        col_name — skips every ancestor (they contain far more text).  The label
+        element (<span>Tags</span>) lives inside the draggable card; starting a
+        drag from the label's center coordinate hits the card's React DnD area.
+
+        Fallback: size-filtered :has-text() catches cases where the target field
+        label says e.g. "Tags (Required)" instead of exactly "Tags".
+
+        x ranges (1280px viewport):
+          left  panel cards: x in [200, 720]  — excludes sidebar link at x=54
+          right panel slots: x in [720, 1280]
         """
-        x_lt = 500 if side == "left" else None
-        x_gt = None if side == "left" else 600
-        # :has-text() matches any element whose text CONTAINS col_name
-        candidates = page.locator(f':has-text("{col_name}")')
+        x_min = 200 if side == "left" else 720
+        x_max = 720 if side == "left" else 1280
+
+        # Pass 1: exact text match — avoids every ancestor wrapper
+        candidates = page.get_by_text(col_name, exact=True)
         count = await candidates.count()
         for i in range(count):
             try:
@@ -523,9 +537,26 @@ async def upload_csv(
                 box = await el.bounding_box()
                 if not box:
                     continue
-                if x_lt and box["x"] < x_lt:
+                if x_min <= box["x"] <= x_max:
                     return el
-                if x_gt and box["x"] > x_gt:
+            except Exception:
+                continue
+
+        # Pass 2: size-filtered :has-text() fallback (e.g. "Tags (Required)")
+        candidates2 = page.locator(f':has-text("{col_name}")')
+        count2 = await candidates2.count()
+        for i in range(count2):
+            try:
+                el = candidates2.nth(i)
+                if not await el.is_visible():
+                    continue
+                box = await el.bounding_box()
+                if not box:
+                    continue
+                # Reject wrapper containers — cards/slots are at most ~450px wide
+                if box["width"] > 450 or box["height"] > 180:
+                    continue
+                if x_min <= box["x"] <= x_max:
                     return el
             except Exception:
                 continue
