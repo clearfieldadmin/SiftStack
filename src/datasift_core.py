@@ -195,6 +195,38 @@ async def screenshot(page, name: str) -> None:
         logger.debug("Screenshot failed (%s): %s", name, e)
 
 
+async def dismiss_beamer_nps(page) -> bool:
+    """Dismiss Beamer NPS popup via its internal close button.
+
+    Switches into the #beamerNPSWidget iframe via Playwright frame_locator and
+    clicks the internal #closeNPS button, which calls Beamer's closeNPS()
+    JavaScript function.  This properly marks the survey as dismissed in
+    Beamer's state — preventing re-injection.
+
+    Replacing the DOM-removal approach that lost a race condition with Beamer's
+    re-injection script (re-injected the iframe within the 500ms gap before
+    subsequent clicks).
+
+    Adapted from the proven Selenium pattern in REISift scraper
+    (beamer_popup_dismissal_complete_guide.md, March 2026):
+        driver.switch_to.frame("beamerNPSWidget")
+        driver.find_element(By.ID, "closeNPS").click()
+        driver.switch_to.default_content()
+
+    Returns True if popup was dismissed, False if not present.
+    """
+    try:
+        nps_frame = page.frame_locator("#beamerNPSWidget")
+        close_btn = nps_frame.locator("#closeNPS")
+        await close_btn.click(timeout=2000)
+        await page.wait_for_timeout(500)  # Let Beamer process the dismissal
+        logger.info("Closed Beamer NPS popup via internal closeNPS button")
+        return True
+    except Exception:
+        logger.debug("No Beamer NPS popup present (or closeNPS not found)")
+        return False
+
+
 async def dismiss_popups(page) -> None:
     """Dismiss notification popups and remove Beamer NPS overlay.
 

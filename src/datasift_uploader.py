@@ -20,6 +20,7 @@ from datasift_core import (
     login,
     screenshot as _screenshot,
     dismiss_popups as _dismiss_popups,
+    dismiss_beamer_nps as _dismiss_beamer_nps,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ async def upload_csv(
     # Dismiss NPS popup / Beamer iframe before clicking Upload File.
     # The #npsIframeContainer iframe intercepts ALL pointer events globally
     # when active — must be removed from DOM before any sidebar click.
+    await _dismiss_beamer_nps(page)
     await _dismiss_popups(page)
     await page.wait_for_timeout(500)
 
@@ -143,7 +145,7 @@ async def upload_csv(
                 '[data-testid="upload-file"]'
             )
         if await upload_btn.count() > 0:
-            await upload_btn.first.click()
+            await upload_btn.first.click(force=True)
             await page.wait_for_timeout(3000)
         else:
             await _screenshot(page, "step1_no_upload_btn")
@@ -457,6 +459,7 @@ async def upload_csv(
     await _screenshot(page, "step3_file_uploaded")
     # Dismiss any popups (e.g., inline NPS survey) that appeared during file upload —
     # they block the Next Step button at the bottom of the wizard.
+    await _dismiss_beamer_nps(page)
     await _dismiss_popups(page)
     await page.wait_for_timeout(1000)
     # 60s timeout — DataSift runs server-side column detection after upload;
@@ -626,6 +629,7 @@ async def upload_csv(
     await _screenshot(page, "step4_after_mapping")
 
     # Dismiss any popups before advancing to Step 5 (NPS survey blocks the button)
+    await _dismiss_beamer_nps(page)
     await _dismiss_popups(page)
     await page.wait_for_timeout(500)
 
@@ -639,6 +643,7 @@ async def upload_csv(
     await _screenshot(page, "step5_review")
 
     # Dismiss any popups before Finish Upload (NPS survey can reappear here)
+    await _dismiss_beamer_nps(page)
     await _dismiss_popups(page)
     await page.wait_for_timeout(500)
 
@@ -649,7 +654,7 @@ async def upload_csv(
             'button:has-text("Submit")'
         )
         if await finish_btn.count() > 0:
-            await finish_btn.first.click()
+            await finish_btn.first.click(force=True)
             logger.info("Clicked Finish Upload")
         else:
             await _screenshot(page, "step5_no_finish_btn")
@@ -701,6 +706,7 @@ async def _navigate_to_records(page: Page) -> None:
     if "/records" not in page.url:
         await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
     await page.wait_for_timeout(5000)
+    await _dismiss_beamer_nps(page)
     await _dismiss_popups(page)
 
 
@@ -712,6 +718,7 @@ async def _filter_by_list(page: Page, list_name: str) -> bool:
     → pick the list name → close panel.
     """
     try:
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
 
         # Open filter panel — "Filter Records" is an <a> link at top-right
@@ -726,6 +733,8 @@ async def _filter_by_list(page: Page, list_name: str) -> bool:
         else:
             logger.warning("No Filter Records link found")
             return False
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, "filter_opened")
@@ -806,8 +815,10 @@ async def _select_all_records(page: Page) -> bool:
     """Select all records on the current page. Returns True if selected."""
     try:
         # Dismiss popups aggressively — the notification popup blocks all clicks
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await page.wait_for_timeout(1000)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await page.wait_for_timeout(500)
 
@@ -1733,6 +1744,7 @@ async def export_phone_enrichment(
 async def _filter_by_preset(page: Page, preset_name: str) -> bool:
     """Filter records by a saved filter preset folder name."""
     try:
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
 
         # Open filter panel
@@ -1747,6 +1759,8 @@ async def _filter_by_preset(page: Page, preset_name: str) -> bool:
         else:
             logger.warning("No Filter Records link found")
             return False
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, "preset_filter_opened")
@@ -1945,7 +1959,7 @@ async def upload_phone_tags(page: Page, csv_path: str | Path) -> dict:
             # Check if we've reached a "Finish Upload" button (final step)
             finish_btn = page.locator('button:has-text("Finish Upload")')
             if await finish_btn.count() > 0:
-                await finish_btn.first.click()
+                await finish_btn.first.click(force=True)
                 await page.wait_for_timeout(5000)
                 logger.info("Clicked 'Finish Upload' for phone tags")
                 await _screenshot(page, "phone_tags_completed")
@@ -2205,6 +2219,7 @@ async def manage_sold_properties(
         logger.info("Navigating to SiftMap...")
         await page.goto(DATASIFT_SIFTMAP_URL, wait_until="domcontentloaded")
         await page.wait_for_timeout(5000)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await _screenshot(page, "siftmap_loaded")
 
@@ -2586,6 +2601,8 @@ async def _siftmap_add_page_to_account(
         logger.warning("Could not find confirm button")
         await _screenshot(page, f"siftmap_no_confirm_{county}_p{page_num}")
 
+    await _dismiss_beamer_nps(page)
+
     await _dismiss_popups(page)
     await _screenshot(page, f"siftmap_complete_{county}_p{page_num}")
 
@@ -2660,6 +2677,7 @@ async def _siftmap_search_sold(
         logger.info("SiftMap: Navigating to %s County %s-%s...", county, start_iso, end_iso)
         await page.goto(url, wait_until="domcontentloaded")
         await page.wait_for_timeout(8000)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await _screenshot(page, f"siftmap_filtered_{county}")
 
@@ -2699,6 +2717,7 @@ async def _siftmap_search_sold(
         # Navigate back to SiftMap for next month/county
         await page.goto(DATASIFT_SIFTMAP_URL, wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
 
     except Exception as e:
@@ -2802,6 +2821,7 @@ async def discover_presets(page: Page) -> dict:
     try:
         # ── Part 1: Discover filter presets ──
         await _navigate_to_records(page)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await _screenshot(page, "discover_records_page")
 
@@ -2819,6 +2839,8 @@ async def discover_presets(page: Page) -> dict:
             await _screenshot(page, "discover_no_filter_link")
             result["message"] = "Filter Records link not found"
             return result
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, "discover_filter_panel")
@@ -2976,6 +2998,7 @@ async def discover_presets(page: Page) -> dict:
         logger.info("Navigating to Sequences page...")
         await page.goto(DATASIFT_SEQUENCES_URL, wait_until="domcontentloaded")
         await page.wait_for_timeout(5000)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await _screenshot(page, "discover_sequences_page")
 
@@ -3064,6 +3087,7 @@ async def _add_sold_status_exclusion(page: Page, preset_name: str) -> dict:
     result = {"success": False, "preset": preset_name}
 
     try:
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
 
         # ── Add Property Status filter block ──
@@ -3118,6 +3142,8 @@ async def _add_sold_status_exclusion(page: Page, preset_name: str) -> dict:
                 }""")
                 await page.wait_for_timeout(2000)
                 logger.info("Added Property Status filter block")
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, f"preset_status_block_{preset_name[:15]}")
@@ -3279,6 +3305,8 @@ async def _add_sold_status_exclusion(page: Page, preset_name: str) -> dict:
                 await page.wait_for_timeout(1000)
                 await _screenshot(page, f"preset_toggle_retry_{preset_name[:10]}")
 
+        await _dismiss_beamer_nps(page)
+
         await _dismiss_popups(page)
 
         # ── Type "Sold" in the property status input and select it ──
@@ -3313,6 +3341,7 @@ async def _add_sold_status_exclusion(page: Page, preset_name: str) -> dict:
 
         if sold_added == "typed_sold":
             # Select "Sold" from the autocomplete/dropdown
+            await _dismiss_beamer_nps(page)
             await _dismiss_popups(page)
             sold_opt = page.get_by_text("Sold", exact=True)
             if await sold_opt.count() > 0:
@@ -3323,6 +3352,8 @@ async def _add_sold_status_exclusion(page: Page, preset_name: str) -> dict:
                         await page.wait_for_timeout(1000)
                         logger.info("Selected 'Sold' status")
                         break
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, f"preset_status_sold_{preset_name[:15]}")
@@ -3398,6 +3429,7 @@ async def update_all_presets_sold_exclusion(
     try:
         # ── Navigate to Records and open filter panel ──
         await _navigate_to_records(page)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
 
         filter_link = page.locator('#Records__Filters_Trigger')
@@ -3410,6 +3442,8 @@ async def update_all_presets_sold_exclusion(
         else:
             result["message"] = "Filter Records link not found"
             return result
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
 
@@ -3699,6 +3733,7 @@ async def create_sold_sequence(page: Page) -> dict:
         logger.info("Navigating to Sequences page...")
         await page.goto(DATASIFT_SEQUENCES_URL, wait_until="domcontentloaded")
         await page.wait_for_timeout(5000)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_page")
 
@@ -3725,6 +3760,8 @@ async def create_sold_sequence(page: Page) -> dict:
             await _screenshot(page, "sequence_no_create_btn")
             result["message"] = "Could not find Create Sequence button"
             return result
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_builder_opened")
@@ -3869,6 +3906,8 @@ async def create_sold_sequence(page: Page) -> dict:
             else:
                 logger.error("Mouse drag failed — no bounding boxes")
 
+        await _dismiss_beamer_nps(page)
+
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_trigger_placed")
 
@@ -3884,6 +3923,7 @@ async def create_sold_sequence(page: Page) -> dict:
         # After trigger placement, page auto-navigates to Conditions tab.
         # Wait for it to settle.
         await page.wait_for_timeout(2000)
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_conditions_tab")
 
@@ -3901,6 +3941,8 @@ async def create_sold_sequence(page: Page) -> dict:
                 logger.warning("Condition drag failed — skipping (optional)")
         else:
             logger.info("Condition drag targets not found — conditions are optional, skipping")
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_condition_placed")
@@ -3982,6 +4024,8 @@ async def create_sold_sequence(page: Page) -> dict:
             )
             await page.wait_for_timeout(3000)
             logger.info("Navigated to Actions tab via URL")
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_actions_tab")
@@ -4122,6 +4166,8 @@ async def create_sold_sequence(page: Page) -> dict:
             search_texts = action_cfg["search"]
             logger.info("Adding action %d: %s", idx + 1, search_texts[0])
 
+            await _dismiss_beamer_nps(page)
+
             await _dismiss_popups(page)
 
             added = False
@@ -4134,6 +4180,8 @@ async def create_sold_sequence(page: Page) -> dict:
             if not added:
                 logger.warning("Could not add action: %s", search_texts[0])
                 continue
+
+            await _dismiss_beamer_nps(page)
 
             await _dismiss_popups(page)
             await _screenshot(page, f"sequence_action_{idx}_{search_texts[0][:15]}")
@@ -4288,6 +4336,7 @@ async def create_sold_sequence(page: Page) -> dict:
 
         # ── Step 4: Save sequence ──
         logger.info("Saving sequence...")
+        await _dismiss_beamer_nps(page)
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_pre_save")
 
@@ -4329,6 +4378,8 @@ async def create_sold_sequence(page: Page) -> dict:
                     logger.info("Saved with title: Sold Property Cleanup V2")
         else:
             logger.warning("Save Sequence button not found")
+
+        await _dismiss_beamer_nps(page)
 
         await _dismiss_popups(page)
         await _screenshot(page, "sequence_saved")
