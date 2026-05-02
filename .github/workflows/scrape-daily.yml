@@ -212,6 +212,15 @@ jobs:
             echo "→ Backup cron: no successful run found today, proceeding"
           fi
 
+          # Day-of-week guard — bid4assets only lists auctions on Mon/Thu.
+          # Manual workflow_dispatch bypasses cron day-of-week filtering, so
+          # weekend runs would hit empty pages and exit 1. Exit 0 instead.
+          DOW=$(date +%u)
+          if [ "$DOW" != "1" ] && [ "$DOW" != "4" ]; then
+            echo "Skipping bid4assets — today is day-of-week $DOW (only runs Mon=1 or Thu=4)"
+            exit 0
+          fi
+
           python run_philly_daily.py \
             --lookback ${{ inputs.lookback || '1' }} \
             --sources bid4assets_mortgage bid4assets_tax \
