@@ -359,7 +359,10 @@ async def upload_csv(
 
     # ── Wizard Step 2: Add tags ──
     logger.info("Wizard Step 2: Adding 'Courthouse Data' tag...")
-    await page.wait_for_timeout(1000)
+    # DataSift's SPA step 1→2 transition takes longer since ~May 2026.
+    # Without this wait, _click_next_step at end of step 2 fires while the
+    # page is still on step 1, advancing step 1→2 instead of step 2→3.
+    await page.wait_for_timeout(7000)
     await _screenshot(page, "step2_tags")
 
     # Add "Courthouse Data" tag via the Custom Tags input on the right side
@@ -429,13 +432,13 @@ async def upload_csv(
 
     # ── Wizard Step 3: Upload the file ──
     logger.info("Wizard Step 3: Uploading CSV file: %s", csv_path.name)
-    await page.wait_for_timeout(3000)
+    await page.wait_for_timeout(6000)
     await _screenshot(page, "step3_before_upload")
 
     try:
         file_input = page.locator('input[type="file"]')
         # Retry with increasing waits for slow SPA rendering
-        for wait in [3000, 5000, 8000]:
+        for wait in [5000, 8000, 10000]:
             if await file_input.count() > 0:
                 break
             logger.debug("File input not found, waiting %dms...", wait)
@@ -4515,3 +4518,4 @@ async def run_manage_presets_workflow(
             return result
         finally:
             await browser.close()
+
