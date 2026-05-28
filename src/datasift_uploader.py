@@ -428,7 +428,23 @@ async def upload_csv(
     except Exception as e:
         logger.warning("Tag addition failed: %s", e)
 
-    await _click_next_step(page)
+    # Step 2→3: Playwright mouse simulation doesn't advance the wizard since
+    # a DataSift change ~May 2026. JS element.click() bypasses whatever is
+    # intercepting pointer events and correctly triggers navigation.
+    try:
+        await page.wait_for_selector(
+            'button:has-text("Next Step"), button:has-text("Next"), button:has-text("Continue")',
+            timeout=10000
+        )
+    except Exception:
+        pass
+    await page.evaluate("""() => {
+        const all = Array.from(document.querySelectorAll('button'));
+        const btn = all.find(b => /next step|^next$|continue/i.test(b.textContent.trim()));
+        if (btn) btn.click();
+    }""")
+    await page.wait_for_timeout(3000)
+    logger.info("Step 2→3: Next Step clicked via JS")
 
     # ── Wizard Step 3: Upload the file ──
     logger.info("Wizard Step 3: Uploading CSV file: %s", csv_path.name)
