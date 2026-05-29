@@ -1309,8 +1309,13 @@ async def upload_to_datasift(
                     "message": "DataSift login failed",
                 }
 
-            # Upload CSV
+            # Upload CSV — retry once on the same page if the first attempt fails.
+            # DataSift's SPA needs one full wizard cycle to initialize; the file
+            # input at step 3 only renders reliably after the page has been warm.
             result = await upload_csv(page, csv_path)
+            if not result.get("success"):
+                logger.info("upload_csv attempt 1 failed — retrying on same page...")
+                result = await upload_csv(page, csv_path)
 
             if result.get("success"):
                 # Derive list name (same format as upload_csv generates)
