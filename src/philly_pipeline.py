@@ -780,6 +780,22 @@ async def run_pipeline(
                     csv_infos[0]["path"], enrich=True, skip_trace=True,
                 )
 
+            # Retry once on failure — first wizard attempt consistently fails due to
+            # a DataSift SPA initialization issue; second attempt always succeeds.
+            if not (upload_result and upload_result.get("success")):
+                logger.info("DataSift upload failed — retrying once (SPA warm-up issue)...")
+                try:
+                    if len(csv_infos) > 1:
+                        upload_result = await upload_datasift_split(
+                            csv_infos, enrich=True, skip_trace=True,
+                        )
+                    else:
+                        upload_result = await upload_to_datasift(
+                            csv_infos[0]["path"], enrich=True, skip_trace=True,
+                        )
+                except Exception as _retry_exc:
+                    upload_result = {"success": False, "message": str(_retry_exc)}
+
             if upload_result and upload_result.get("success"):
                 logger.info("DataSift upload: %s", upload_result.get("message", "OK"))
             else:
