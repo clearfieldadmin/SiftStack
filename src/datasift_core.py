@@ -145,19 +145,17 @@ async def login(page, email: str = None, password: str = None) -> bool:
     has_cookies = await load_cookies(page.context)
     if has_cookies:
         await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
-        # Wait up to 10s for the SPA to settle past the /?next= intermediate redirect
+        # Wait up to 12s for the SPA to finish its auth redirect chain.
+        # The SPA may show login at /?next=... (not /login) so URL-only checks
+        # are unreliable. Instead wait for the Upload File sidebar button which
+        # only appears in the authenticated state.
         try:
-            await page.wait_for_function(
-                "() => !window.location.href.includes('?next=')",
-                timeout=10000,
-            )
+            await page.wait_for_selector('text="Upload File"', timeout=12000)
+            logger.info("DataSift session restored from cookies (url=%s)", page.url)
+            return True
         except PwTimeout:
             pass
-        current_url = page.url
-        if "/login" not in current_url:
-            logger.info("DataSift session restored from cookies (url=%s)", current_url)
-            return True
-        logger.info("DataSift cookies expired (url=%s), doing fresh login", current_url)
+        logger.info("DataSift cookies expired (url=%s), doing fresh login", page.url)
 
     # Fresh login
     await page.goto(DATASIFT_LOGIN_URL, wait_until="domcontentloaded")
@@ -166,30 +164,30 @@ async def login(page, email: str = None, password: str = None) -> bool:
     # Fill credentials
     await page.get_by_role("textbox", name="Email").fill(email)
     await page.get_by_role("textbox", name="Password").fill(password)
+    await page.wait_for_timeout(500)
 
-    # Hidden checkboxes — click labels, not inputs
-    remember_label = page.locator('label:has-text("Remember me")')
-    if await remember_label.count() > 0:
-        await remember_label.first.click()
+    # The "I've read and agree" checkbox must be checked before Sign In enables.
+    # Use data-testid="AgreeCheckbox" (confirmed from DevTools inspection).
+    await page.evaluate("""() => {
+        const cb = document.querySelector('[data-testid="AgreeCheckbox"], input[name="agree"]');
+        if (cb && !cb.checked) cb.click();
+    }""")
+    await page.wait_for_timeout(300)
 
-    terms_label = page.locator('label:has-text("I\'ve read and agree")')
-    if await terms_label.count() > 0:
-        await terms_label.first.click()
+    # Submit: click the button (now enabled after agree) + Enter as backup
+    submit_btn = page.locator('button[type="submit"]')
+    if await submit_btn.count() > 0:
+        await submit_btn.click(force=True)
+    else:
+        await page.get_by_role("textbox", name="Password").press("Enter")
 
-    # Click Sign In (try both known button labels)
-    sign_in_btn = page.get_by_role("button", name="Sign In")
-    if await sign_in_btn.count() == 0:
-        sign_in_btn = page.get_by_role("button", name="Log In")
-    await sign_in_btn.click()
-
-    # Wait for navigation away from login page (any authenticated URL)
+    # Wait for the authenticated sidebar ("Upload File") to appear.
+    # URL-based checks are unreliable — DataSift's SPA may show /?next=... or
+    # /dashboard/general (404) while the session is actually established.
     try:
-        await page.wait_for_function(
-            "() => !window.location.href.includes('/login')",
-            timeout=20000,
-        )
+        await page.wait_for_selector('text="Upload File"', timeout=20000)
     except PwTimeout:
-        logger.error("DataSift login failed — still on login page (url=%s)", page.url)
+        logger.error("DataSift login failed — sidebar not found after submit (url=%s)", page.url)
         await screenshot(page, "login_failed")
         return False
 

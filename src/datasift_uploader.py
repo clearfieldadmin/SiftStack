@@ -121,40 +121,45 @@ async def upload_csv(
 
     # ── Step 1: Click "Upload File" in sidebar ──
     logger.info("Step 1: Clicking Upload File...")
-    # Navigate to records page (skip if already there from login)
-    if "/records" not in page.url:
-        await page.goto(DATASIFT_UPLOAD_URL, wait_until="domcontentloaded")
-    # Wait for SPA to fully render (longer for headless/cloud environments)
-    await page.wait_for_timeout(8000)
+    # Always navigate explicitly — don't trust the URL left over from login,
+    # as the SPA may still be in a /?next= redirect state.
+    await page.goto(DATASIFT_UPLOAD_URL, wait_until="domcontentloaded")
 
     # Dismiss NPS popup / Beamer iframe before clicking Upload File.
     # The #npsIframeContainer iframe intercepts ALL pointer events globally
     # when active — must be removed from DOM before any sidebar click.
     await _dismiss_beamer_nps(page)
     await _dismiss_popups(page)
-    await page.wait_for_timeout(500)
+
+    # Dismiss any top-of-page announcement banners (e.g. pricing update banners)
+    # that can sit over the sidebar and intercept clicks.
+    try:
+        close_banner = page.locator('[aria-label="Close"], button:has-text("×"), button:has-text("✕")').first
+        if await close_banner.count() > 0:
+            await close_banner.click(force=True)
+            await page.wait_for_timeout(300)
+            logger.debug("Dismissed announcement banner")
+    except Exception:
+        pass
+    # JS fallback: remove fixed-position banners/alerts at top of page
+    await page.evaluate("""() => {
+        document.querySelectorAll('[class*="Banner"], [class*="banner"], [class*="Alert"], [class*="alert"], [class*="Announcement"]').forEach(el => {
+            const rect = el.getBoundingClientRect();
+            if (rect.top < 150 && rect.width > 400) el.remove();
+        });
+    }""")
 
     try:
-        # The Upload File button is in the sidebar — it's a styled element, not a <button>
+        from playwright.async_api import TimeoutError as PwTimeout
+        # Wait up to 20s for the Upload File button — more reliable than a fixed sleep.
         upload_btn = page.locator('text="Upload File"')
-        if await upload_btn.count() == 0:
-            upload_btn = page.locator(
-                'a:has-text("Upload File"), '
-                'div:has-text("Upload File") >> visible=true, '
-                'button:has-text("Upload File"), '
-                '[data-testid="upload-file"]'
-            )
-        if await upload_btn.count() > 0:
-            await upload_btn.first.click(force=True)
-            await page.wait_for_timeout(3000)
-        else:
-            await _screenshot(page, "step1_no_upload_btn")
-            result["message"] = "Could not find Upload File button"
-            logger.error(result["message"])
-            return result
+        await upload_btn.first.wait_for(state="visible", timeout=20000)
+        await upload_btn.first.click(force=True)
+        await page.wait_for_timeout(3000)
     except Exception as e:
-        result["message"] = f"Step 1 failed: {e}"
-        logger.error(result["message"])
+        await _screenshot(page, "step1_no_upload_btn")
+        result["message"] = "Could not find Upload File button"
+        logger.error("%s (url=%s): %s", result["message"], page.url, e)
         return result
 
     await _screenshot(page, "step1_wizard_opened")
