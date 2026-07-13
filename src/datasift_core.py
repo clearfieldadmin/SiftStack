@@ -145,15 +145,23 @@ async def login(page, email: str = None, password: str = None) -> bool:
     has_cookies = await load_cookies(page.context)
     if has_cookies:
         await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
-        await page.wait_for_timeout(5000)
+        # Wait up to 10s for the SPA to settle past the /?next= intermediate redirect
+        try:
+            await page.wait_for_function(
+                "() => !window.location.href.includes('?next=')",
+                timeout=10000,
+            )
+        except PwTimeout:
+            pass
         current_url = page.url
-        if "/login" not in current_url and ("/dashboard" in current_url or "/records" in current_url):
-            logger.info("DataSift session restored from cookies")
+        if "/login" not in current_url:
+            logger.info("DataSift session restored from cookies (url=%s)", current_url)
             return True
         logger.info("DataSift cookies expired (url=%s), doing fresh login", current_url)
 
     # Fresh login
     await page.goto(DATASIFT_LOGIN_URL, wait_until="domcontentloaded")
+    await page.wait_for_timeout(1000)
 
     # Fill credentials
     await page.get_by_role("textbox", name="Email").fill(email)
@@ -168,19 +176,25 @@ async def login(page, email: str = None, password: str = None) -> bool:
     if await terms_label.count() > 0:
         await terms_label.first.click()
 
-    # Click Sign In
-    await page.get_by_role("button", name="Sign In").click()
+    # Click Sign In (try both known button labels)
+    sign_in_btn = page.get_by_role("button", name="Sign In")
+    if await sign_in_btn.count() == 0:
+        sign_in_btn = page.get_by_role("button", name="Log In")
+    await sign_in_btn.click()
 
-    # Wait for navigation away from login page
+    # Wait for navigation away from login page (any authenticated URL)
     try:
-        await page.wait_for_url("**/dashboard/general**", timeout=15000)
+        await page.wait_for_function(
+            "() => !window.location.href.includes('/login')",
+            timeout=20000,
+        )
     except PwTimeout:
-        if "/login" in page.url:
-            logger.error("DataSift login failed — still on login page")
-            return False
+        logger.error("DataSift login failed — still on login page (url=%s)", page.url)
+        await screenshot(page, "login_failed")
+        return False
 
     await save_cookies(page)
-    logger.info("DataSift login successful")
+    logger.info("DataSift login successful (url=%s)", page.url)
     return True
 
 
