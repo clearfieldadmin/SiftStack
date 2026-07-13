@@ -932,7 +932,14 @@ def _build_slack_summary(
     """Build a single combined Slack message for the full daily run."""
     lines: list[str] = []
     mode = "Resume" if resume_from else "Daily"
-    lines.append(f"*SiftStack Philly — {mode} Run Complete*")
+
+    # Determine if any DataSift upload failed
+    bucket_failed = upload_result is not None and not upload_result.get("success")
+    niche_failed = any(not r.get("success") for r in (niche_results or []))
+    upload_failed = bucket_failed or niche_failed
+
+    status = "⚠️ UPLOAD FAILED" if upload_failed else "Run Complete"
+    lines.append(f"*SiftStack Philly — {mode} {status}*")
 
     # Scrape counts
     if not resume_from:
@@ -984,7 +991,9 @@ def _build_slack_summary(
     # Phone scoring
     if phone_result:
         if phone_result.get("skipped"):
-            lines.append(f"Phones: skipped — {phone_result.get('message','')}")
+            msg = phone_result.get("message", "")
+            prefix = "Phones: ✗ skipped" if "login" in msg.lower() or "failed" in msg.lower() else "Phones: skipped"
+            lines.append(f"{prefix} — {msg}")
         else:
             tier_parts = "  ".join(
                 f"{t}: {c}" for t, c in phone_result.get("tier_counts", {}).items() if c
