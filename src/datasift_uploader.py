@@ -450,28 +450,25 @@ async def upload_csv(
 
     # ── Wizard Step 3: Upload the file ──
     logger.info("Wizard Step 3: Uploading CSV file: %s", csv_path.name)
-    await page.wait_for_timeout(3000)
+    await page.wait_for_timeout(2000)
     await _screenshot(page, "step3_before_upload")
 
     try:
         file_input = page.locator('input[type="file"]')
-        # Retry with increasing waits for slow SPA rendering
-        for wait in [3000, 5000, 8000]:
-            if await file_input.count() > 0:
-                break
-            logger.debug("File input not found, waiting %dms...", wait)
-            await page.wait_for_timeout(wait)
-            file_input = page.locator('input[type="file"]')
-
-        if await file_input.count() > 0:
-            await file_input.first.set_input_files(str(csv_path))
-            logger.info("CSV file selected: %s", csv_path.name)
-            await page.wait_for_timeout(3000)
-        else:
+        # DataSift's upload widget hides the file input (opacity:0 / display:none),
+        # so wait for "attached" (in DOM) not "visible". 25s covers slow SPA renders.
+        try:
+            await file_input.first.wait_for(state="attached", timeout=25000)
+        except Exception:
             await _screenshot(page, "step3_no_file_input")
             result["message"] = "Could not find file input element"
             logger.error(result["message"])
             return result
+
+        # set_input_files works on hidden inputs via DevTools protocol
+        await file_input.first.set_input_files(str(csv_path))
+        logger.info("CSV file selected: %s", csv_path.name)
+        await page.wait_for_timeout(3000)
     except Exception as e:
         result["message"] = f"File upload failed: {e}"
         logger.error(result["message"])
