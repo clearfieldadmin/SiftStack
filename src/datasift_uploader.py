@@ -359,12 +359,29 @@ async def upload_csv(
 
     await _screenshot(page, "step1_form_filled")
 
-    # Click "Next Step" to proceed to step 2
+    # Click "Next Step" to proceed past Setup
     await _click_next_step(page, timeout=30000)
 
-    # ── Wizard Step 2: Add tags ──
-    logger.info("Wizard Step 2: Adding 'Courthouse Data' tag...")
-    await page.wait_for_timeout(1000)
+    # DataSift added a new "Auto-Enrichment" step (Step 2) between Setup and Add Tags.
+    # "Swap Owners" is OFF by default — just click Next Step through it.
+    try:
+        enrichment = page.locator('text="Auto-Enrichment"')
+        if await enrichment.count() > 0:
+            logger.info("Auto-Enrichment step detected — skipping (Swap Owners stays OFF)")
+            await _click_next_step(page, timeout=10000)
+    except Exception:
+        pass
+
+    # ── Wizard Step: Add tags ──
+    # Confirm we're on the Tags step before proceeding.
+    logger.info("Wizard Step: Adding 'Courthouse Data' tag...")
+    try:
+        await page.wait_for_selector(
+            'input[placeholder*="Search or add a new tag"]', timeout=10000
+        )
+        logger.info("Tags step confirmed")
+    except Exception:
+        logger.warning("Tag input not found in 10s — wizard step may have changed again")
     await _screenshot(page, "step2_tags")
 
     # Add "Courthouse Data" tag via the Custom Tags input on the right side
@@ -430,47 +447,35 @@ async def upload_csv(
     except Exception as e:
         logger.warning("Tag addition failed: %s", e)
 
-    # Step 2→3: Playwright mouse simulation doesn't advance the wizard since
-    # a DataSift change ~May 2026. JS element.click() bypasses whatever is
-    # intercepting pointer events and correctly triggers navigation.
-    try:
-        await page.wait_for_selector(
-            'button:has-text("Next Step"), button:has-text("Next"), button:has-text("Continue")',
-            timeout=10000
-        )
-    except Exception:
-        pass
-    await page.evaluate("""() => {
-        const all = Array.from(document.querySelectorAll('button'));
-        const btn = all.find(b => /next step|^next$|continue/i.test(b.textContent.trim()));
-        if (btn) btn.click();
-    }""")
-    await page.wait_for_timeout(3000)
-    logger.info("Step 2→3: Next Step clicked via JS")
+    # Step 2→3: use _click_next_step (same as all other wizard transitions).
+    await _click_next_step(page, timeout=15000)
+    logger.info("Step 2→3: Next Step clicked")
 
     # ── Wizard Step 3: Upload the file ──
+    # Confirm we reached Step 3 before looking for the file input.
+    # If Step 2→3 didn't advance the wizard, this gives a clear error instead of
+    # a silent 25s timeout looking for a file input that will never appear.
+    try:
+        await page.wait_for_selector('text="Upload your CSV File"', timeout=10000)
+        logger.info("Wizard Step 3 confirmed")
+    except Exception:
+        await _screenshot(page, "step3_not_reached")
+        result["message"] = "Wizard did not advance to Step 3 (Upload file)"
+        logger.error("%s (url=%s)", result["message"], page.url)
+        return result
+
     logger.info("Wizard Step 3: Uploading CSV file: %s", csv_path.name)
-    await page.wait_for_timeout(2000)
     await _screenshot(page, "step3_before_upload")
 
     try:
         file_input = page.locator('input[type="file"]')
-        # DataSift's upload widget hides the file input (opacity:0 / display:none),
-        # so wait for "attached" (in DOM) not "visible". 25s covers slow SPA renders.
-        try:
-            await file_input.first.wait_for(state="attached", timeout=25000)
-        except Exception:
-            await _screenshot(page, "step3_no_file_input")
-            result["message"] = "Could not find file input element"
-            logger.error(result["message"])
-            return result
-
-        # set_input_files works on hidden inputs via DevTools protocol
+        await file_input.first.wait_for(state="attached", timeout=10000)
         await file_input.first.set_input_files(str(csv_path))
         logger.info("CSV file selected: %s", csv_path.name)
         await page.wait_for_timeout(3000)
     except Exception as e:
-        result["message"] = f"File upload failed: {e}"
+        await _screenshot(page, "step3_no_file_input")
+        result["message"] = "Could not find file input element"
         logger.error(result["message"])
         return result
 
