@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 # ── API Configuration ─────────────────────────────────────────────────
 API_BASE = "https://api.openwebninja.com/realtime-zillow-data"
 PROPERTY_ENDPOINT = f"{API_BASE}/property-details-address"
-COMPS_ENDPOINT = f"{API_BASE}/similar-sale-homes"
+# similar-sale-homes was retired by OpenWeb Ninja (404) — comps now come from
+# /search via zillow_market_api (see fetch_comparable_sales)
 REQUEST_DELAY_MIN = 1.0
 REQUEST_DELAY_MAX = 2.0
 REQUEST_TIMEOUT = 30
@@ -820,7 +821,7 @@ def generate_comp_report(subject: SubjectProperty, comps: list[CompProperty],
 
     notes = [
         "Data Source: OpenWeb Ninja Real-Time Zillow Data API",
-        "Comparable sales sourced from Zillow's similar-sale-homes endpoint",
+        "Comparable sales sourced from the /search endpoint (RECENTLY_SOLD, price-band partitioned)",
         "",
         "Adjustment Methodology:",
         f"  Square Footage: ${ADJ_PER_SQFT:,.0f} per sqft difference",
