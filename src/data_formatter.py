@@ -95,6 +95,8 @@ SIFT_COLUMNS = [
     "entity_research_source",
     "entity_research_confidence",
     "source_url",
+    # Proof-of-source auction notice screenshot (permanent Dropbox ?raw=1 URL)
+    "notice_screenshot_url",
     # Pipeline metadata
     "run_id",
 ]
@@ -295,6 +297,7 @@ def write_csv(notices: list[NoticeData], filename: str | None = None) -> Path:
                 "entity_research_source": notice.entity_research_source,
                 "entity_research_confidence": notice.entity_research_confidence,
                 "source_url": notice.source_url,
+                "notice_screenshot_url": getattr(notice, "notice_screenshot_url", ""),
                 "run_id": notice.run_id,
             }
             writer.writerow(row)

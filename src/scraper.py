@@ -135,9 +135,9 @@ async def login(page: Page, _retries: int = 3) -> bool:
     for attempt in range(1, _retries + 1):
         try:
             logger.info("Logging in to %s (attempt %d/%d)", LOGIN_URL, attempt, _retries)
-            await page.goto(LOGIN_URL)
-            await page.wait_for_load_state("networkidle")
-            break  # page loaded successfully
+            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            await page.wait_for_selector(SEL_LOGIN_EMAIL, timeout=30000)
+            break  # login form present
         except Exception as exc:
             logger.warning("Login navigation failed (attempt %d/%d): %s", attempt, _retries, exc)
             if attempt < _retries:
@@ -150,7 +150,12 @@ async def login(page: Page, _retries: int = 3) -> bool:
     await page.fill(SEL_LOGIN_EMAIL, config.TNPN_EMAIL)
     await page.fill(SEL_LOGIN_PASSWORD, config.TNPN_PASSWORD)
     await page.click(SEL_LOGIN_SUBMIT)
-    await page.wait_for_load_state("networkidle")
+    # The dashboard holds connections open, so networkidle never settles through the
+    # residential proxy (hangs ~60s then fails). Wait for the post-login redirect instead.
+    try:
+        await page.wait_for_url(lambda u: "smartsearch" in u.lower(), timeout=45000)
+    except Exception:
+        await page.wait_for_load_state("domcontentloaded")
     await delay()
 
     # Successful login redirects to /Smartsearch/Default.aspx

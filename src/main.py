@@ -481,6 +481,19 @@ async def actor_main() -> None:
             try:
                 shots = [n for n in notices if getattr(n, "notice_screenshot_path", "")]
                 if shots:
+                    # Prefer DROPBOX (a PERMANENT public ?raw=1 link) so the auction
+                    # image travels with the lead forever; fall back to the Apify KVS
+                    # (ephemeral, ~7 days) per-image if Dropbox is unavailable.
+                    import config as _cfg
+                    use_dropbox = bool(_cfg.DROPBOX_REFRESH_TOKEN or os.environ.get("DROPBOX_ACCESS_TOKEN"))
+                    dbx = None
+                    if use_dropbox:
+                        try:
+                            from dropbox_uploader import upload_and_share, direct_url, _get_client
+                            dbx = _get_client()
+                        except Exception as e:
+                            Actor.log.warning("Dropbox init failed (%s); falling back to KVS screenshots", e)
+                            use_dropbox = False
                     if not kvs:
                         kvs = await Actor.open_key_value_store()
                     kvs_id = getattr(kvs, 'id', None) or getattr(kvs, '_id', '')
@@ -489,19 +502,47 @@ async def actor_main() -> None:
                         p = Path(n.notice_screenshot_path)
                         if not p.exists():
                             continue
-                        with open(p, "rb") as f:
-                            await kvs.set_value(p.name, f.read(), content_type="image/png")
-                        # Only publish a URL when we have a real store id; a blank
-                        # id would yield a 404 image. Degrade to local path (no
-                        # inline image) rather than a broken Slack image block.
-                        if kvs_id:
-                            n.notice_screenshot_url = (
-                                f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{p.name}"
-                            )
-                        hosted += 1
-                    Actor.log.info("Hosted %d notice screenshots in KVS", hosted)
+                        url = ""
+                        if use_dropbox and dbx is not None:
+                            try:
+                                link = upload_and_share(p, f"/FTM Auction Notices/{p.name}", dbx=dbx)
+                                if link:
+                                    url = direct_url(link)
+                            except Exception as e:
+                                Actor.log.warning("Dropbox upload failed for %s: %s", p.name, e)
+                        if not url:  # KVS fallback (ephemeral ~7d)
+                            with open(p, "rb") as f:
+                                await kvs.set_value(p.name, f.read(), content_type="image/png")
+                            if kvs_id:
+                                url = f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{p.name}"
+                        if url:
+                            n.notice_screenshot_url = url
+                            hosted += 1
+                    if dbx is not None:
+                        try:
+                            dbx.close()
+                        except Exception:
+                            pass
+                    Actor.log.info("Hosted %d notice screenshots (%s)", hosted,
+                                   "Dropbox" if use_dropbox else "KVS")
             except Exception as e:
                 Actor.log.warning("Notice screenshot hosting failed: %s, continuing", e)
+
+            # ── Re-write output.csv with screenshot URLs ───────────────
+            # write_csv ran BEFORE hosting, so the first output.csv lacked
+            # notice_screenshot_url. Re-write it now (the column is in SIFT_COLUMNS)
+            # so the permanent Dropbox URL flows: output.csv -> consolidate -> master
+            # -> filter -> upload -> reisift Notice Screenshot field + Notes.
+            try:
+                if any(getattr(n, "notice_screenshot_url", "") for n in notices):
+                    csv_path = write_csv(notices)
+                    if not kvs:
+                        kvs = await Actor.open_key_value_store()
+                    with open(csv_path, "rb") as f:
+                        await kvs.set_value("output.csv", f.read(), content_type="text/csv")
+                    Actor.log.info("Re-wrote output.csv with notice_screenshot_url populated")
+            except Exception as e:
+                Actor.log.warning("output.csv re-write failed: %s, continuing", e)
 
             # ── DataSift CSVs → KVS (manual upload) ─────────────────
             # Generate DataSift-formatted CSVs and save to Apify KVS

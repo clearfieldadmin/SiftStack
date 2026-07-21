@@ -236,7 +236,11 @@ def _build_tags(notice: NoticeData) -> str:
     - DM confidence level (for deceased records)
     - has_auction if auction date is upcoming
     """
-    tags = ["Courthouse Data"]
+    # "Courthouse Data" signals first-to-market county data. "FTM" (First-to-Market /
+    # Tier 1) is the tag the ty+2 marketing template routes on: direct-from-county notice
+    # data is the FTM upload stream and must carry `FTM` to land in the FTM-CALL/FTM-MAIL
+    # folders (SiftMap/aggregated data is `Tier 2` instead). See the data-tier model.
+    tags = ["Courthouse Data", "FTM"]
 
     # Notice type
     if notice.notice_type:
@@ -744,7 +748,11 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
         "Notes": notes,
         # ── Built-in fields ──
         "Estimated Value": notice.estimated_value,
-        "MSL Status": notice.mls_status,
+        # BLANKED (bug 2026-06): the upload wizard auto-maps "MSL Status" to the reisift
+        # lead STATUS field, so a Zillow "sold"/"listed" AUCTION listing here wrongly stamped
+        # active foreclosures as sold and suppressed them from the cadence. MLS status is not
+        # needed for FTM cold outreach. Leave blank so the lead status is never set on import.
+        "MSL Status": "",
         "Last Sale Date": _format_date(notice.mls_last_sold_date),
         "Last Sale Price": notice.mls_last_sold_price,
         "Equity Percentage": notice.equity_percent,

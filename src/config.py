@@ -62,7 +62,14 @@ OPENWEBNINJA_API_KEY = os.getenv("OPENWEBNINJA_API_KEY", "")  # Zillow property 
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")              # Serper.dev Google Search API
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")        # Firecrawl JS-rendered scraping
 TRACERFY_API_KEY = os.getenv("TRACERFY_API_KEY", "")          # Tracerfy skip tracing
-TRESTLE_API_KEY = os.getenv("TRESTLE_API_KEY", "")            # Trestle phone validation
+TRESTLE_API_KEY = os.getenv("TRESTLE_API_KEY", "")            # Trestle phone validation (legacy single key)
+# Trestle affiliate: exhaust the FREE key (1,000 free lookups) first, then spill to PAID.
+# Router = _api/clients/trestle_router.py. If only the legacy TRESTLE_API_KEY is set it is
+# treated as PAID (set TRESTLE_LEGACY_IS_FREE=1 to treat it as the free key instead).
+TRESTLE_FREE_API_KEY = os.getenv("TRESTLE_FREE_API_KEY", "")  # affiliate free-allotment key (1,000 free)
+TRESTLE_PAID_API_KEY = os.getenv("TRESTLE_PAID_API_KEY", "")  # billed key (used after free is exhausted)
+TRESTLE_FREE_LIMIT = int(os.getenv("TRESTLE_FREE_LIMIT", "1000"))   # size of the free allotment
+TRESTLE_FREE_RESET = os.getenv("TRESTLE_FREE_RESET", "cumulative")  # "cumulative" (one-time) or "monthly"
 ENFORMION_AP_NAME = os.getenv("ENFORMION_AP_NAME", "")        # Enformion/Endato API access profile name
 ENFORMION_AP_PASSWORD = os.getenv("ENFORMION_AP_PASSWORD", "")  # Enformion/Endato API access profile password
 SCRAPFLY_KEY = os.getenv("SCRAPFLY_KEY", "")                  # Scrapfly web scraping API (residential proxy + ASP/CAPTCHA + screenshots)
@@ -140,6 +147,7 @@ SCRAPFLY_COUNTRY = os.getenv("SCRAPFLY_COUNTRY", "us")          # proxy geolocat
 SCRAPFLY_RENDER_WAIT_MS = int(os.getenv("SCRAPFLY_RENDER_WAIT_MS", "3500"))  # wait after View Notice click
 SCRAPFLY_TIMEOUT_MS = int(os.getenv("SCRAPFLY_TIMEOUT_MS", "90000"))         # per-call ceiling
 SCRAPFLY_MAX_RETRIES = int(os.getenv("SCRAPFLY_MAX_RETRIES", "2"))           # extra attempts on gate/CAPTCHA miss
+SCRAPFLY_PROXY_POOL = os.getenv("SCRAPFLY_PROXY_POOL", "public_residential_pool")  # residential proxies for the generic ASP fallback fetcher (scrapfly_browser)
 
 # ── Image Processing ───────────────────────────────────────────────────
 BLUR_THRESHOLD = int(os.getenv("BLUR_THRESHOLD", "100"))   # Laplacian variance; below = rejected as blurry
