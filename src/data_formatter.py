@@ -26,6 +26,7 @@ SIFT_COLUMNS = [
     "Owner State",
     "Owner ZIP Code",
     "Date Added",
+    "Notice Publish Date",
     # Extra columns (not in Sift template but useful for filtering)
     "notice_type",
     "county",
@@ -94,6 +95,8 @@ SIFT_COLUMNS = [
     "entity_research_source",
     "entity_research_confidence",
     "source_url",
+    # Proof-of-source auction notice screenshot (permanent Dropbox ?raw=1 URL)
+    "notice_screenshot_url",
     # Pipeline metadata
     "run_id",
 ]
@@ -178,8 +181,13 @@ def deduplicate(notices: list[NoticeData]) -> list[NoticeData]:
             result.append(notice)
             continue
 
+        # Tie-break on publication date (most recent notice wins). date_added is
+        # the run date and is identical across a single run, so it can't order.
         existing = seen_addrs.get(key)
-        if existing is None or notice.date_added > existing.date_added:
+        if existing is None or (
+            (notice.date_published or notice.date_added)
+            > (existing.date_published or existing.date_added)
+        ):
             seen_addrs[key] = notice
 
     # Add address-deduped notices
@@ -227,6 +235,7 @@ def write_csv(notices: list[NoticeData], filename: str | None = None) -> Path:
                 "Owner State": notice.owner_state,
                 "Owner ZIP Code": notice.owner_zip,
                 "Date Added": _format_date_sift(notice.date_added),
+                "Notice Publish Date": _format_date_sift(notice.date_published),
                 "notice_type": notice.notice_type,
                 "county": notice.county,
                 "decedent_name": notice.decedent_name,
@@ -288,6 +297,7 @@ def write_csv(notices: list[NoticeData], filename: str | None = None) -> Path:
                 "entity_research_source": notice.entity_research_source,
                 "entity_research_confidence": notice.entity_research_confidence,
                 "source_url": notice.source_url,
+                "notice_screenshot_url": getattr(notice, "notice_screenshot_url", ""),
                 "run_id": notice.run_id,
             }
             writer.writerow(row)
@@ -325,6 +335,7 @@ def write_csv_by_type(notices: list[NoticeData]) -> list[Path]:
 CSV_TO_FIELD = {
     "full_name": "owner_name",
     "Date Added": "date_added",
+    "Notice Publish Date": "date_published",
     "Owner Street": "owner_street",
     "Owner City": "owner_city",
     "Owner State": "owner_state",
@@ -335,7 +346,7 @@ CSV_TO_FIELD = {
 _NOTICE_FIELDS = {f.name for f in NoticeData.__dataclass_fields__.values()}
 
 # Date columns that use Sift M/D/YYYY format and need conversion back to YYYY-MM-DD
-_DATE_FIELDS = {"date_added", "auction_date", "mls_last_sold_date"}
+_DATE_FIELDS = {"date_added", "date_published", "auction_date", "mls_last_sold_date"}
 
 
 def _parse_sift_date(sift_date: str) -> str:
