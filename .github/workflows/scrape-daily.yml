@@ -92,6 +92,17 @@ jobs:
           restore-keys: |
             scored-phones-
 
+      # Persists the tax-delinquency delta state (parcels already uploaded).
+      # First run seeds it and uploads nothing; Mondays after that upload only
+      # newly delinquent parcels. Same always-miss key pattern as scored-phones.
+      - name: Restore tax-delinquency seen-state
+        uses: actions/cache@v4
+        with:
+          path: data/cache/opa_delinquent_seen.json
+          key: opa-delinquent-seen-${{ github.run_id }}
+          restore-keys: |
+            opa-delinquent-seen-
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
@@ -133,9 +144,16 @@ jobs:
           if [ "${{ inputs.phone_scoring }}" = "false" ]; then
             PHONE_FLAG="--no-phone-scoring"
           fi
+
+          # Mondays add the weekly tax-delinquency delta pull (seen-state cached above)
+          EXTRA_SOURCES=""
+          if [ "$(date -u +%u)" = "1" ]; then
+            EXTRA_SOURCES="opa_tax_delinquent"
+          fi
+
           python run_philly_daily.py \
             --lookback ${{ inputs.lookback || '1' }} \
-            --sources li_violations inquirer_probate fjd_evictions \
+            --sources li_violations inquirer_probate fjd_evictions li_imminently_dangerous $EXTRA_SOURCES \
             $PHONE_FLAG
 
       - name: Notify Slack on GHA failure

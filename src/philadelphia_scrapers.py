@@ -456,11 +456,37 @@ _SOURCE_TAX_DELINQUENT = next(
 )
 
 
-async def scrape_opa_tax_delinquent(lookback_days: int = 7) -> list[NoticeData]:
-    """Fetch real estate tax delinquencies from OpenDataPhilly Carto.
+# Seen-state for the tax-delinquency DELTA. The Carto dataset is a rolling
+# snapshot (~19.6K parcels match the filters as of 2026-07), so uploading the
+# full list every run would flood the niche funnel with tier-2 bulk data.
+# First-to-market value is only the NEWLY delinquent parcels, so each run
+# uploads the delta against this parcel set. Path is CWD-relative like
+# phone_validator's scored_phones.json; the GHA workflow persists it via
+# actions/cache between runs.
+_OPA_SEEN_PATH = Path("data/cache/opa_delinquent_seen.json")
 
-    Filters: num_years_owed >= 2 AND total_due >= 5000.
-    No lookback filter — this is a static delinquency snapshot updated periodically.
+
+def _load_opa_seen() -> set[str]:
+    try:
+        return set(json.loads(_OPA_SEEN_PATH.read_text()))
+    except (OSError, ValueError):
+        return set()
+
+
+def _save_opa_seen(seen: set[str]) -> None:
+    _OPA_SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _OPA_SEEN_PATH.write_text(json.dumps(sorted(seen)))
+
+
+async def scrape_opa_tax_delinquent(lookback_days: int = 7) -> list[NoticeData]:
+    """Fetch NEWLY delinquent parcels from OpenDataPhilly Carto (delta mode).
+
+    Filters: num_years_owed >= 2 AND total_due >= 5000. The dataset is a
+    rolling snapshot, so this returns only parcels not present in the
+    seen-state file from prior runs. On the very first run (no state file)
+    it seeds the state with the full snapshot and returns nothing — the
+    existing ~19.6K backlog is tier-2 stacking data already available in
+    SiftMap, not first-to-market.
     lookback_days param accepted for API compatibility but unused.
     """
     if _SOURCE_TAX_DELINQUENT is None:
@@ -490,7 +516,25 @@ async def scrape_opa_tax_delinquent(lookback_days: int = 7) -> list[NoticeData]:
     today = _today()
     notices: list[NoticeData] = []
 
-    for row in rows:
+    seen = _load_opa_seen()
+    snapshot = {str(r.get("opa_number") or "") for r in rows} - {""}
+    if not seen:
+        _save_opa_seen(snapshot)
+        logger.info(
+            "[opa_tax_delinquent] First run — seeded seen-state with %d parcels, "
+            "returning 0 records (backlog is tier-2 data; deltas start next run)",
+            len(snapshot),
+        )
+        return []
+
+    new_rows = [r for r in rows if str(r.get("opa_number") or "") not in seen]
+    _save_opa_seen(seen | snapshot)
+    logger.info(
+        "[opa_tax_delinquent] %d newly delinquent parcels (of %d in snapshot)",
+        len(new_rows), len(rows),
+    )
+
+    for row in new_rows:
         zip_raw = str(row.get("zip_code") or "")[:5]
         n = _philly_notice(
             _SOURCE_TAX_DELINQUENT,
@@ -572,38 +616,45 @@ _SOURCE_IMMINENTLY_DANGEROUS = next(
 
 
 async def scrape_li_imminently_dangerous(lookback_days: int = 7) -> list[NoticeData]:
-    """Fetch Imminently Dangerous structures from L&I violations Carto table.
+    """Fetch Imminently Dangerous structures from the live L&I violations table.
 
-    Filters by prioritydesc = 'IMMINENTLY DANGEROUS'. No lookback filter —
-    uses full dataset since new cases appear continuously.
-    lookback_days param accepted for API compatibility but unused here.
-    Also runs OPA enrichment to populate parcel_id, property_type, year_built.
+    Queries the eCLIPSE-era `violations` table (caseprioritydesc), NOT the
+    legacy `li_violations` table — that dataset froze at the March 2020
+    eCLIPSE migration (max caseaddeddate 2020-03-12), so the old query only
+    ever returned pre-2020 cases. Live-table volume check (2026-07-24):
+    1,042 ID rows in the trailing year, ~72/month — a small daily delta.
+
+    Filters: caseprioritydesc = 'IMMINENTLY DANGEROUS', casestatus != 'CLOSED',
+    casecreateddate within lookback_days.
     """
     if _SOURCE_IMMINENTLY_DANGEROUS is None:
         logger.error("[li_imminently_dangerous] Source not found in PHILLY_SOURCES")
         return []
 
-    # li_violations table columns (confirmed from live schema 2026-04-30):
-    # caseaddeddate (not casecreateddate), ownername (not opa_owner),
-    # violationdescription (direct), status (not violationstatus), casestatus
     query = (
-        "SELECT v.address, v.zip, v.caseaddeddate, "
-        "v.violationdescription, "
-        "v.status, v.casestatus, "
-        "v.ownername, "
+        "SELECT v.address, v.zip, v.casecreateddate, "
+        "v.violationcodetitle AS violationdescription, "
+        "v.violationstatus AS status, v.casestatus, "
+        "v.opa_owner AS ownername, "
         "v.opa_account_num AS parcelid_num, "
         "v.geocode_x, v.geocode_y, "
         "o.mailing_street AS owneraddress, "
         "o.mailing_city_state AS ownercitystate, "
         "o.mailing_zip AS ownerzip "
-        "FROM li_violations v "
+        f"FROM {PHILLY_CARTO_VIOLATIONS_TABLE} v "
         "LEFT JOIN opa_properties_public o "
         "  ON v.opa_account_num = o.parcel_number "
-        "WHERE v.prioritydesc = 'IMMINENTLY DANGEROUS'"
+        "WHERE v.caseprioritydesc = 'IMMINENTLY DANGEROUS' "
+        "  AND v.casestatus != 'CLOSED' "
+        f"  AND v.casecreateddate >= NOW() - INTERVAL '{lookback_days} days' "
+        "ORDER BY v.casecreateddate DESC"
     )
     params = {"q": query, "format": "json"}
 
-    logger.info("[li_imminently_dangerous] Querying Carto API (prioritydesc=IMMINENTLY DANGEROUS)")
+    logger.info(
+        "[li_imminently_dangerous] Querying Carto API (last %d days, open cases)",
+        lookback_days,
+    )
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.get(PHILLY_CARTO_API_URL, params=params)
         resp.raise_for_status()
@@ -1276,11 +1327,20 @@ async def scrape_fjd_lis_pendens(
         logger.warning("[fjd_lis_pendens] SCRAPFLY_API_KEY not set — skipping")
         return []
 
-    # FJD date inputs expect MM/DD/YYYY
-    date_from = datetime.strptime(_cutoff(lookback_days), "%Y-%m-%d").strftime("%m/%d/%Y")
-    date_to = datetime.now().strftime("%m/%d/%Y")
+    # FJD date fields are <input type="date"> — programmatic .value assignment
+    # REQUIRES ISO YYYY-MM-DD. The old MM/DD/YYYY strings were silently
+    # rejected by the browser (value stayed empty), so every search posted
+    # blank dates and bounced back to the setup page — previously
+    # misdiagnosed as a reCAPTCHA v3 rejection.
+    date_from = _cutoff(lookback_days)
+    date_to = datetime.now().strftime("%Y-%m-%d")
     notices: list[NoticeData] = []
     seen_dockets: set[str] = set()
+
+    # One sticky Scrapfly session for the whole run: the person-search URL
+    # carries uid/o tokens minted on the index load, so cookies + proxy IP
+    # must stay consistent across requests.
+    session_name = f"fjd_lp_{datetime.now():%Y%m%d%H%M%S}"
 
     logger.info("[fjd_lis_pendens] Loading FJD index via Scrapfly: %s", PHILLY_FJD_CIVIL_URL)
 
@@ -1293,6 +1353,7 @@ async def scrape_fjd_lis_pendens(
                 render_js=True,
                 country="us",
                 rendering_wait=3000,
+                session=session_name,
             ))
         except Exception:
             logger.exception("[fjd_lis_pendens] Scrapfly: could not load FJD index")
@@ -1318,24 +1379,31 @@ async def scrape_fjd_lis_pendens(
             # Escape servicer name for inline JS string literal
             safe_name = servicer.replace("\\", "\\\\").replace("'", "\\'")
 
-            # JS hook: runs after Scrapfly renders the setup page.
-            # Fills the three required fields and clicks Submit, which triggers
-            # the form's event listener → grecaptcha.execute() → form.submit().
-            # rendering_wait=15000 gives Scrapfly time for the full async
-            # reCAPTCHA solve + navigation to the results page.
-            js_hook = (
+            # Set fields by direct .value assignment — the date fields are
+            # <input type="date"> and only accept ISO YYYY-MM-DD (scenario
+            # "fill" types like a user, unreliable for date controls).
+            set_fields_js = (
                 "(function(){"
-                "  var ln=document.querySelector('[name=last_name]'),"
-                "      bd=document.querySelector('[name=begin_date]'),"
-                "      ed=document.querySelector('[name=end_date]'),"
-                "      btn=document.querySelector('input[type=submit][value=Submit]');"
-                "  if(!ln||!bd||!ed||!btn)return;"
-                f"  ln.value='{safe_name}';"
-                f"  bd.value='{date_from}';"
-                f"  ed.value='{date_to}';"
-                "  btn.click();"
+                f"  document.querySelector('[name=last_name]').value='{safe_name}';"
+                f"  document.querySelector('[name=begin_date]').value='{date_from}';"
+                f"  document.querySelector('[name=end_date]').value='{date_to}';"
                 "})()"
             )
+
+            # js_scenario, NOT plain js=: clicking Submit fires the page's
+            # validate() → grecaptcha.execute() (async) → form.submit(), and
+            # only a scenario's wait_for_navigation makes Scrapfly follow
+            # that POST before capturing content. The old plain-js hook
+            # captured the pre-submit setup page every time, which looked
+            # like a reCAPTCHA rejection.
+            scenario = [
+                {"wait_for_selector": {"selector": "input[name='last_name']", "timeout": 15000}},
+                {"wait": 3000},  # let the reCAPTCHA v3 script finish loading
+                {"execute": {"script": set_fields_js}},
+                {"click": {"selector": "input[type='submit']"}},
+                {"wait_for_navigation": {"timeout": 10000}},  # Scrapfly max 10s
+                {"wait": 2500},
+            ]
 
             try:
                 result = await client.async_scrape(ScrapeConfig(
@@ -1344,8 +1412,9 @@ async def scrape_fjd_lis_pendens(
                     render_js=True,
                     country="us",
                     retry=True,
-                    rendering_wait=15000,
-                    js=js_hook,
+                    rendering_wait=3000,
+                    js_scenario=scenario,
+                    session=session_name,
                 ))
             except Exception:
                 logger.warning(
