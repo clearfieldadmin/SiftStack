@@ -315,6 +315,39 @@ _NICHE_LISTS: dict[str, str] = {
 }
 
 
+# ── Cross-run upload ledger ─────────────────────────────────────────────────
+# Persistent set of keys for every record ever uploaded, so re-scraped records
+# don't re-upload and bump their DataSift date. CWD-relative like the phone and
+# tax-delinquent caches; the GHA workflow persists it via actions/cache.
+_UPLOAD_LEDGER_PATH = Path("data/cache/uploaded_ledger.json")
+
+
+def _ledger_key(n: NoticeData) -> str:
+    """Stable identity for a record: parcel_id if present, else norm address.
+
+    Keyed on the property, not the notice_type — once a parcel is in DataSift
+    and marketing to it, re-uploading a second signal on the same parcel would
+    still bump its date, which is exactly what we're preventing.
+    """
+    pid = (getattr(n, "parcel_id", "") or "").strip()
+    if pid:
+        return f"pid:{pid}"
+    addr = re.sub(r"\s+", " ", (n.address or "").strip().lower())
+    return f"addr:{addr}"
+
+
+def _load_upload_ledger() -> set[str]:
+    try:
+        return set(json.loads(_UPLOAD_LEDGER_PATH.read_text()))
+    except (OSError, ValueError):
+        return set()
+
+
+def _save_upload_ledger(keys: set[str]) -> None:
+    _UPLOAD_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _UPLOAD_LEDGER_PATH.write_text(json.dumps(sorted(keys)))
+
+
 def _write_niche_list_csvs(notices: list[NoticeData]) -> list[dict]:
     """Split records by notice_type and write one DataSift CSV per niche list.
 
@@ -560,6 +593,33 @@ async def run_pipeline(
         stats["dedup_removed"]   = removed
         stats["total_after_dedup"] = len(notices)
 
+        # ── 3a. Cross-run upload ledger (first-to-market delta) ─────────────
+        # _dedup_notices only dedupes WITHIN this run. Records that reappear on
+        # later days (probate notices publish ~3 weeks; violations/evictions
+        # persist in the lookback window) would otherwise re-upload every run,
+        # bumping their DataSift date and re-filling each day's SiftStack
+        # bucket. The ledger gives the pipeline cross-run memory: anything
+        # already uploaded is dropped here, so the daily bucket holds only
+        # genuinely-new records (Trestle still scores that bucket — untouched).
+        # Skipped for --resume-from (records already came from a prior upload)
+        # and dry runs (limit set / upload disabled), which must not consume it.
+        ledger_keys_new: list[str] = []
+        if upload_datasift and limit is None:
+            ledger = _load_upload_ledger()
+            fresh: list[NoticeData] = []
+            for n in notices:
+                k = _ledger_key(n)
+                if k in ledger:
+                    continue
+                fresh.append(n)
+                ledger_keys_new.append(k)
+            stats["already_uploaded_skipped"] = len(notices) - len(fresh)
+            logger.info(
+                "── Step 3a: Upload ledger — %d new, %d already uploaded (skipped) ──",
+                len(fresh), stats["already_uploaded_skipped"],
+            )
+            notices = fresh
+
         # ── 3b. Tax delinquency enrichment overlay ───────────────────────────
         # Enrich non-TAX_DELINQUENT records that have a parcel_id but no tax data yet.
         logger.info("── Step 3b: Tax delinquency enrichment ──")
@@ -788,6 +848,16 @@ async def run_pipeline(
         except Exception as exc:
             logger.error("DataSift upload error: %s", exc, exc_info=True)
             upload_result = {"success": False, "message": str(exc)}
+
+        # Commit today's new records to the ledger ONLY if the upload landed —
+        # on failure they stay off the ledger so the next run retries them
+        # instead of silently dropping them.
+        if ledger_keys_new and upload_result and upload_result.get("success"):
+            ledger = _load_upload_ledger()
+            ledger.update(ledger_keys_new)
+            _save_upload_ledger(ledger)
+            logger.info("Upload ledger: recorded %d new keys (total %d)",
+                        len(ledger_keys_new), len(ledger))
 
     # ── 10b. Niche list uploads (Option B-1) ────────────────────────────────
     # Each niche list upload runs in its OWN browser session to avoid shared

@@ -103,6 +103,17 @@ jobs:
           restore-keys: |
             opa-delinquent-seen-
 
+      # Cross-run upload ledger — records already sent to DataSift, so
+      # re-scraped records don't re-upload and bump their date. Always-miss
+      # key pattern like the other caches.
+      - name: Restore upload ledger
+        uses: actions/cache@v4
+        with:
+          path: data/cache/uploaded_ledger.json
+          key: upload-ledger-${{ github.run_id }}
+          restore-keys: |
+            upload-ledger-
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
@@ -192,6 +203,17 @@ jobs:
           key: scored-phones-${{ github.run_id }}
           restore-keys: |
             scored-phones-
+
+      # Cross-run upload ledger — records already sent to DataSift, so
+      # re-scraped records don't re-upload and bump their date. Always-miss
+      # key pattern like the other caches.
+      - name: Restore upload ledger
+        uses: actions/cache@v4
+        with:
+          path: data/cache/uploaded_ledger.json
+          key: upload-ledger-${{ github.run_id }}
+          restore-keys: |
+            upload-ledger-
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
